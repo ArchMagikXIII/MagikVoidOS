@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Build Brave Origin as a Void package. Thin wrapper around lib/brave-origin.sh.
+#
+#   scripts/build-brave-origin                  # build + install (needs sudo)
+#   scripts/build-brave-origin --destdir /tmp/x # stage only, no root
+#   scripts/build-brave-origin --version 1.96.60
+
+set -uo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+source "$ROOT_DIR/lib/common.sh"
+source "$ROOT_DIR/lib/brave-origin.sh"
+
+while (($#)) && [[ $1 != --* ]]; do shift; done
+brave_build "$@"
