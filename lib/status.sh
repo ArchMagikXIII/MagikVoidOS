@@ -374,16 +374,19 @@ chk_wallpaper() {
 chk_launch_shims() {
     local missing=() mispathed=()
     local s want
-    for s in uwsm-app systemd-run; do
+    # systemctl is shimmed too: the MagikOS tree makes 101 systemctl calls
+    # across 42 files, and on runit every one of them fails, nearly all of them
+    # 2>/dev/null-guarded so the affected feature just silently does nothing.
+    for s in uwsm-app systemd-run systemctl; do
         [[ -x "$MAGIKOS_HOME/bin/$s" ]] || missing+=("$s")
     done
     if ((${#missing[@]})); then
-        CHECK_HINT="missing: ${missing[*]}"$'\n'"apps launched from the menu die silently because these do not exist on Void"$'\n'"fix with: ./install.sh --no-packages"
+        CHECK_HINT="missing: ${missing[*]}"$'\n'"Void has no uwsm, no systemd and no user service manager, so these calls all fail"$'\n'"apps launched from the menu die silently, and every systemctl-guarded feature does nothing"$'\n'"fix with: ./install.sh --no-packages"
         return 1
     fi
     # A shim that exists but is shadowed further down PATH does the same thing
     # as no shim at all, so confirm PATH actually resolves to ours.
-    for s in uwsm-app systemd-run; do
+    for s in uwsm-app systemd-run systemctl; do
         want="$MAGIKOS_HOME/bin/$s"
         if [[ -x "$MAGIKOS_HOME/bin/$s" ]]; then
             local got
@@ -625,7 +628,7 @@ check "runtime is a git clone"    chk_runtime_clone
     printf '\n\033[1m  Quickshell + env\033[0m\n'
     check "shell.json staged"            chk_shell_json
     check "shell font (bar glyphs)"      chk_shell_font
-check "app launch shims (uwsm/systemd-run)" chk_launch_shims
+check "launch shims (uwsm/systemd-run/systemctl)" chk_launch_shims
     check "Qt can decode .webp wallpapers" chk_qt_webp
     check "theme set (pickers work)"     chk_theme
     check "image thumbnail backend"      chk_thumbnail_backend
