@@ -35,16 +35,15 @@ alsa-lib
 at-spi2-core
 atk
 ca-certificates
-cups-libs
+libcups
 dbus
 expat
-font-liberation-ttf
-gtk3
+liberation-fonts-ttf
+gtk+
 libX11
 libXcomposite
 libXdamage
 libXext
-libXfixes
 libXfixes
 libXrandr
 libxkbcommon
@@ -123,13 +122,19 @@ brave_build() {
     rm -rf "$w"; mkdir -p "$w"
     local deb="$w/brave-origin_${BRAVE_VERSION}_amd64.deb"
     local url="$BRAVE_REPO_URL/v${BRAVE_VERSION}/brave-origin_${BRAVE_VERSION}_amd64.deb"
+    # Look for a pre-fetched deb in share/brave-cache/. Relative to this script
+    # so the repo works from any checkout path. Never hardcode a home
+    # directory here: it makes the repo non-portable and it is why the cache
+    # never hit for anyone but the original author.
+    local cache_dir=""
+    if [[ -n "${SHARE_DIR:-}" ]]; then
+        cache_dir="$SHARE_DIR/brave-cache"
+    else
+        cache_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/share/brave-cache"
+    fi
     local cached_deb=""
-
-    # Check for cached deb in repo share
-    if [[ -n "${SHARE_DIR:-}" && -f "${SHARE_DIR}/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb" ]]; then
-        cached_deb="${SHARE_DIR}/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb"
-    elif [[ -f "/home/magikxiii/Projects/magikos-void/share/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb" ]]; then
-        cached_deb="/home/magikxiii/Projects/magikos-void/share/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb"
+    if [[ -f "$cache_dir/brave-origin_${BRAVE_VERSION}_amd64.deb" ]]; then
+        cached_deb="$cache_dir/brave-origin_${BRAVE_VERSION}_amd64.deb"
     fi
 
     if [[ -n "$cached_deb" && -s "$cached_deb" ]]; then
@@ -190,6 +195,16 @@ brave_build() {
     # current directory, so run this from the workdir.
     local deps
     deps="$(brave_void_depends | tr '\n' ' ')"
+
+    # Every dependency must exist as a Void package name. A stale Debian name
+    # (cups-libs, font-liberation-ttf, gtk3) does not fail here -- xbps-create
+    # accepts any string -- it only explodes later at `xbps-install` time, long
+    # after the build was reported as successful. Catch it while we can see it.
+    if ! verify_package_names $(brave_void_depends); then
+        err "aborting: the generated package would be uninstallable"
+        return 1
+    fi
+
     if ( cd "$w" && xbps-create -q -A x86_64 \
             -n "brave-origin-${BRAVE_VERSION}_1" \
             -s "Brave Origin browser (MagikOS Void port)" \

@@ -13,19 +13,18 @@ VOID_BASE_PACKAGES=(
     wayland
     xorg-server-xwayland
 
-    # Quickshell shell
+    # Quickshell shell. quickshell pulls qt6-declarative/wayland-client itself,
+    # but we pin them explicitly so a shell QML import error is never mistaken
+    # for a missing package. Void does NOT ship per-QML-module packages
+    # (no qml6-module-*): the imports live inside qt{5,6}-declarative.
     quickshell
-    qt5-quickcontrols2
-    qt6-qtdeclarative
-    qt6-qtwayland
+    qt6-declarative
+    qt6-wayland
+    qt6-multimedia
     qt6-tools
-    qml6-module
-    qml-module-qtquick
-    qml-module-qtquick-controls
-    qml-module-qtquick-layouts
-    qml-module-qtmultimedia
-    qt6-qtmultimedia
-    qml-module-qtwayland
+    qt5-declarative
+    qt5-quickcontrols2
+    qt5-wayland
 
     # Terminal + bar/system helpers referenced by bindings & shell
     foot
@@ -45,20 +44,17 @@ VOID_BASE_PACKAGES=(
     swaybg
     swayidle
     swaylock
-    waybar
+    Waybar
     jq
 
     # Fonts + icons for the shell
-    font-liberation-ttf
-    dejavu-ttf
+    liberation-fonts-ttf
+    dejavu-fonts-ttf
     noto-fonts-ttf
-    nerd-fonts-ttf
-    nerd-fonts-symbols-ttf
 
     # Portal / session plumbing
     xdg-desktop-portal
     xdg-desktop-portal-gtk
-    xdg-desktop-portal-xcursors
     polkit
     accountsservice
     gsettings-desktop-schemas
@@ -67,8 +63,8 @@ VOID_BASE_PACKAGES=(
     wireplumber
 
     # Shell/browser integration used by the menu
-    gtk3
-    cups-libs
+    gtk+
+    libcups
 )
 
 # Packages the user must review before install (license / extra footprint).
@@ -79,6 +75,38 @@ VOID_OPTIONAL_PACKAGES=(
     tailscale
     upower
 )
+
+# Is a package name resolvable in the enabled repositories?
+#
+# Use `-R -S` (repository + show), which is an *exact* pkgname lookup.
+# Do NOT use `-Rs` ("search"): that also matches the description, so asking
+# for `qt6` matches `AppStream-qt` and asking for a bad name like
+# `qt6-qtdeclarative` can still return rows. Exact mode is the only
+# trustworthy existence test.
+pkg_available() {
+    xbps-query -R -S "$1" >/dev/null 2>&1
+}
+
+# Check every requested name BEFORE handing anything to xbps-install.
+#
+# `xbps-install -y a b c` is one transaction: a single unresolvable name aborts
+# the whole thing, so a typo in one entry silently installs *nothing*. That is
+# exactly how quickshell went missing while the installer still said packages
+# were installed. Verify names first and report every bad one at once.
+verify_package_names() {
+    local -a bad=()
+    local p
+    for p in "$@"; do
+        pkg_available "$p" || bad+=("$p")
+    done
+    if ((${#bad[@]} == 0)); then
+        return 0
+    fi
+    err "these package names do not exist in your Void repositories:"
+    printf '        %s\n' "${bad[@]}"
+    err "fix lib/packages.sh, or run: sudo xbps-install -S   # refresh the index"
+    return 1
+}
 
 install_base_packages() {
     local missing=() p
@@ -91,6 +119,10 @@ install_base_packages() {
     fi
     log "Installing ${#missing[@]} base package(s) via xbps"
     printf '      %s\n' "${missing[@]}"
+
+    # Guard the transaction: never ask xbps to install a name it cannot find.
+    verify_package_names "${missing[@]}" || return 1
+
     ensure_sudo || return 1
     if [[ $DRY_RUN -eq 1 ]]; then
         _c sudo xbps-install -yS "${missing[@]}"

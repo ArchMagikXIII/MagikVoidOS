@@ -16,6 +16,7 @@ on Void with xbps and an unprivileged prefix.
 install.sh                  entry point (idempotent, sudo-aware, --dry-run/--status)
 lib/common.sh               logging, Void detection, sudo, ensure_dir/ensure_paths
 lib/packages.sh             curated Void package set (replaces magikos-base.packages)
+lib/fonts.sh                Nerd Font install + fontconfig alias for bar glyphs
 lib/stage-magikos.sh        clone upstream, apply port patch, patch sway, set env
 lib/status.sh               the checks behind `install.sh --status`
 lib/brave-origin.sh         build Brave Origin as a native Void package
@@ -69,20 +70,37 @@ maintainer supplies a token out of band. Rotate the deploy key by editing
    silently reverts the port. `apply_sway_overrides` always runs on both.
 3. **`is_void()` must not check `/etc/xbps`.** Void has `/etc/xbps.d` and
    `/var/db/xbps`. The `/etc/xbps` check looks plausible and is always false.
-4. **Guard every Void package-name assumption.** A stale xbps index makes
-   `xbps-query -Rs` return wrong or empty results (it did not list `sway`
-   itself). Sync the index before trusting a package query.
-5. **Test without root.** `--destdir` for the Brave builder and `--dry-run`
+4. **Guard every Void package-name assumption, and never guess a name.** Use
+   `xbps-query -R -S <pkg>` for existence: `-R -S` is an exact pkgname lookup.
+   Do **not** use `-Rs`, which searches name *and description*, so `qt6` matches
+   `AppStream-qt` and a bogus name can still return rows. Name mapping that
+   matters: `cups-libs`->`libcups`, `gtk3`->`gtk+`,
+   `font-liberation-ttf`->`liberation-fonts-ttf`, `dejavu-ttf`->`dejavu-fonts-ttf`,
+   `waybar`->`Waybar`, `qt6-qtdeclarative`->`qt6-declarative`,
+   `qt6-qtwayland`->`qt6-wayland`, `qt6-qtmultimedia`->`qt6-multimedia`.
+   Void ships **no per-QML-module packages** (`qml6-module-*` does not exist);
+   QML imports live inside `qt5-declarative` / `qt6-declarative`.
+   `verify_package_names()` in `lib/packages.sh` enforces this before any
+   install.
+5. **`xbps-install -y a b c` is one transaction.** One unresolvable name
+   aborts the whole thing, so a single typo silently installs *nothing* while
+   the installer still reports success. This is exactly how `quickshell` went
+   missing on a fresh machine. Always `verify_package_names` first.
+6. **Test without root.** `--destdir` for the Brave builder and `--dry-run`
    for the installer exist so changes can be validated unprivileged.
-6. **`--dry-run` must not touch the filesystem.** Every mutation goes through
+7. **`--dry-run` must not touch the filesystem.** Every mutation goes through
    `_c` or an explicit `((DRY_RUN))` branch. A `mkdir` that is not guarded is
    a bug: it creates directories for real while claiming nothing changed.
-7. **Never claim success the installer did not achieve.** Step failures set a
+8. **Never claim success the installer did not achieve.** Step failures set a
    nonzero `rc`, and `status_report` runs at the end of every install so the
    user gets a PASS/FAIL verdict rather than a cheerful "Done". A check that
    cannot run should `echo "skip <reason>"`, not silently pass.
-8. **Every failing check must name its fix.** Set `CHECK_HINT` with the exact
+10. **Every failing check must name its fix.** Set `CHECK_HINT` with the exact
    command. A FAIL that does not say what to do is worse than no check.
+   `check()` must therefore run the check function **in the current shell**;
+   `out="$("$@" 2>&1)"` runs it in a subshell and silently discards
+   `CHECK_HINT`, so every FAIL renders with an empty fix. Capture stdout to a
+   temp file instead.
 
 ## Verification commands
 
@@ -182,11 +200,49 @@ So we repackage that prebuilt binary instead of compiling:
   none, though the desktop entry references one)
 - real `.xbps` via `xbps-create`, with Void-named deps
 
+`xbps-create -D` accepts *any* dependency string without complaint, so Debian
+names survive into the package and only explode later at `xbps-install` time,
+long after the build was reported successful. `brave_void_depends` therefore
+runs through `verify_package_names` before packaging. The Debian->Void
+mappings it needed: `cups-libs`->`libcups`, `gtk3`->`gtk+`,
+`font-liberation-ttf`->`liberation-fonts-ttf`.
+
 Compiling Chromium from source is not viable here (6 cores / 7.8 GiB / 33 GiB;
 a Chromium build wants far more). Repackaging needs only curl + python3.
 
 The sandbox works via unprivileged user namespaces on this host
 (`max_user_namespaces = 31630`), so `chrome-sandbox` does not need setuid.
+
+## Shell fonts
+
+The bar draws Nerd Font codepoints using the *default* Qt family:
+`Style.qml:227` sets `fontFamily: "monospace"`. Upstream Arch/CachyOS ships
+Nerd Fonts so `monospace` happens to resolve to one; on Void it resolves to
+DejaVu Sans Mono, which has no private-use glyphs, and every icon becomes a
+tofu box.
+
+So installing a Nerd Font is necessary but **not sufficient** -- `lib/fonts.sh`
+also writes `~/.config/fontconfig/conf.d/99-magikos-nerd.conf` so `monospace`
+wins the match. `chk_shell_font` verifies the resolved family.
+
+Void's `nerd-fonts-ttf` is an every-family aggregator: **1517 MB** to download,
+**7447 MB** installed, for the one family used. That is also why an earlier
+installer "failed to download the fonts". `lib/fonts.sh` instead fetches
+`JetBrainsMono.zip` (~128 MB) from nerd-fonts releases, cached under
+`$TMPDIR`, unpacked with `python3 -m zipfile` (Void has no `unzip`
+dependency; `python3` is already a bootstrap tool).
+
+## Keybinds
+
+Keybinds live in `~/.config/sway/bindings.conf`, which `config` includes --
+the `config` file itself has zero `bindsym` lines. When `sway --validate`
+fails, sway discards the whole config *including every include*, so the user
+loses keybinds, output config and autostart simultaneously. That single
+failure presents as "my desktop came up but nothing is bound".
+
+`chk_sway_validate` therefore reports the offending file and line parsed from
+sway's `Error on line N ...(file)` output, and `chk_sway_keybinds` counts
+`bindsym` lines so a silently-empty bindings file is caught.
 
 ## Deliberately not ported
 

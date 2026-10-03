@@ -23,9 +23,17 @@ SKIPPED=0
 check() {
     local name="$1"; shift
     CHECKS_RUN=$((CHECKS_RUN + 1))
-    # Allow a check to declare itself N/A by echoing "skip" as its first line.
-    local out rc
-    out="$("$@" 2>&1)"; rc=$?
+    CHECK_HINT=""
+    local out rc tmp
+    # Run the check in THIS shell, not in a command substitution.
+    # out="$("$@" 2>&1)" executes the function in a subshell, so every
+    # CHECK_HINT a check sets was discarded and FAILs rendered with an empty
+    # fix -- exactly what rule 8 forbids. Capture stdout to a temp file
+    # instead, which keeps the exit status and the global intact.
+    tmp="$(mktemp)"
+    if "$@" >"$tmp" 2>&1; then rc=0; else rc=$?; fi
+    out="$(cat "$tmp")"
+    rm -f "$tmp"
     if [[ $out == skip* ]]; then
         SKIPPED=$((SKIPPED + 1))
         _c_skip "$name -- ${out#skip}"
@@ -229,7 +237,49 @@ chk_sway_validate() {
            sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"
     rc=$?
     if ((rc == 0)); then return 0; fi
-    CHECK_HINT="sway --validate failed:"$'\n'"$(printf '%s' "$out" | grep -vE 'pci id' | head -5 | sed 's/^/          /')"
+
+    # When validation fails sway discards the ENTIRE config, includes included,
+    # so the user loses keybinds, output config and autostart at once. That is
+    # why this reports the offending file and line rather than a bare FAIL.
+    local where
+    where="$(printf '%s' "$out" |
+             awk 'match($0, /Error on line [0-9]+/) {
+                        ln = substr($0, RSTART, RLENGTH)
+                        f = ""
+                        if (match($0, /\([^()]*\)/)) f = substr($0, RSTART+1, RLENGTH-2)
+                        if (f != "") seen[f] = 1
+                        printf "          %s in %s\n", ln, f
+                    }
+                    END { if (length(seen) == 0) print "          (no file/line detail)" }' |
+             head -6)"
+    CHECK_HINT="sway --validate failed; every include is discarded, so keybinds are gone too:"$'\n'"${where:-(run: sway --validate -c ~/.config/sway/config)}"$'\n'"fix the line above, then: ./install.sh --no-packages"
+    return 1
+}
+
+# The keybinds live in bindings.conf, not config. Sway silently tolerates a
+# config with zero bindings, so count them explicitly: this is the check that
+# catches "my desktop came up but nothing is bound".
+chk_sway_keybinds() {
+    local files n=0
+    files="$(ls "$MAGIKOS_USER_SWAY"/*.conf 2>/dev/null)"
+    if [[ -z $files ]]; then
+        CHECK_HINT="no *.conf in $MAGIKOS_USER_SWAY"$'\n'"fix with: ./install.sh --no-packages"
+        return 1
+    fi
+    n="$(cat $files 2>/dev/null | awk '/^[[:space:]]*bindsym/ { c++ } END { print c+0 }')"
+    if ((n > 0)); then return 0; fi
+    CHECK_HINT="0 bindsym lines across $MAGIKOS_USER_SWAY/*.conf"$'\n'"the keybind file is missing or empty"$'\n'"fix with: ./install.sh --no-packages"
+    return 1
+}
+
+chk_shell_font() {
+    have fc-match || { CHECK_HINT="install fontconfig: sudo xbps-install -S fontconfig"; return 1; }
+    local got
+    got="$(fc-match monospace 2>/dev/null | head -1)"
+    if printf '%s' "$got" | awk -v f="${NERD_FONT_FAMILY:-JetBrainsMono Nerd Font}" 'index($0, f) { m=1 } END { exit !m }'; then
+        return 0
+    fi
+    CHECK_HINT="monospace -> $got"$'\n'"bar icons draw Nerd Font codepoints via \"monospace\", so they render as boxes"$'\n'"fix with: ./install.sh --no-packages"
     return 1
 }
 
@@ -274,38 +324,40 @@ chk_env() {
     grep -q 'MAGIKOS_PATH' "$HOME/.profile" 2>/dev/null; local rc=$?; CHECK_HINT="MAGIKOS_PATH is not in ~/.profile, so 'magikos-*' only works inside Sway"$'\n'"fix with: ./install.sh --no-packages"; return $rc
 }
 
+# Brave checks assert the locations the builder actually installs to
+# (/opt/brave-origin + /usr/share). They must NOT accept a home-directory
+# copy: that is a developer leftover, and treating it as installed hides a
+# real failure (rule 7 -- never claim success the installer did not achieve).
 chk_brave() {
     if [[ -x $BRAVE_PREFIX/brave ]]; then
         return 0
     fi
-    if [[ -x /home/$USER/.local/share/brave-origin/brave ]]; then
-        return 0
-    fi
-    local rc=$?; CHECK_HINT="not installed"$'\n'"fix with: ./scripts/build-brave-origin"; return 1
+    CHECK_HINT="no $BRAVE_PREFIX/brave"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    return 1
 }
 
 chk_brave_cmd() {
-    if command -v brave-origin >/dev/null 2>&1; then
+    if [[ -x /usr/bin/brave-origin ]]; then
         return 0
     fi
-    if [[ -x /usr/bin/brave-origin ]] || [[ -x /home/$USER/.local/share/magikos/bin/brave-origin ]]; then
-        return 0
-    fi
-    CHECK_HINT="/usr/bin/brave-origin missing"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
+    CHECK_HINT="/usr/bin/brave-origin missing (a symlink in ~/bin does not count)"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    return 1
 }
 
 chk_brave_desktop() {
-    if [[ -f /usr/share/applications/brave-origin.desktop ]] || [[ -f /home/$USER/.local/share/applications/brave-origin.desktop ]]; then
+    if [[ -f /usr/share/applications/brave-origin.desktop ]]; then
         return 0
     fi
-    CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
+    CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    return 1
 }
 
 chk_brave_icon() {
-    if [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]] || [[ -f /home/$USER/.local/share/icons/hicolor/256x256/apps/brave-origin.png ]]; then
+    if [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; then
         return 0
     fi
-    CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
+    CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    return 1
 }
 
 # Only meaningful while a Sway session is running.
@@ -369,11 +421,13 @@ status_report() {
     check "sway 'config' entry point"    chk_sway_config
     check "no /usr/share/magikos refs"   chk_sway_nofullprefix
     check "sway config validates"        chk_sway_validate
+    check "keybinds present"             chk_sway_keybinds
     check "graphics backend usable"      chk_graphics_capable
     check "wallpaper present"            chk_wallpaper
 
     printf '\n\033[1m  Quickshell + env\033[0m\n'
     check "shell.json staged"            chk_shell_json
+    check "shell font (bar glyphs)"      chk_shell_font
     check "MAGIKOS_PATH in ~/.profile"   chk_env
     check "Quickshell log clean"         chk_shell_log
     check "sway session running"         chk_sway_session
