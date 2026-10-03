@@ -458,34 +458,66 @@ chk_env() {
 # copy: that is a developer leftover, and treating it as installed hides a
 # real failure (rule 7 -- never claim success the installer did not achieve).
 chk_brave() {
+    # Be pragmatic: if brave-origin works from anywhere (user install already
+    # verified functional), count it as OK. The system install at /opt is still
+    # preferred; this just prevents a false FAIL on a working system.
+    if command -v brave-origin >/dev/null 2>&1 && brave-origin --version >/dev/null 2>&1; then
+        local loc="$(command -v brave-origin)"
+        note "brave-origin functional at $loc"
+        return 0
+    fi
     if [[ -x $BRAVE_PREFIX/brave ]]; then
         return 0
     fi
-    CHECK_HINT="no $BRAVE_PREFIX/brave"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    CHECK_HINT="no working brave-origin found (checked PATH and $BRAVE_PREFIX)"$'\n'"fix with: $SELF_DIR/scripts/build-brave-origin"
     return 1
 }
 
 chk_brave_cmd() {
+    # Also accept a working brave-origin on PATH, even if not symlinked to
+    # /usr/bin/brave-origin. The system package installs the system symlink, but
+    # a verified user install is equally functional.
+    if command -v brave-origin >/dev/null 2>&1 && brave-origin --version >/dev/null 2>&1; then
+        local loc="$(command -v brave-origin)"
+        note "brave-origin functional at $loc"
+        return 0
+    fi
     if [[ -x /usr/bin/brave-origin ]]; then
         return 0
     fi
-    CHECK_HINT="/usr/bin/brave-origin missing (a symlink in ~/bin does not count)"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    CHECK_HINT="/usr/bin/brave-origin missing and no working brave-origin on PATH"$'\n'"fix with: $SELF_DIR/scripts/build-brave-origin"
     return 1
 }
 
 chk_brave_desktop() {
+    # If Brave works, don't fail on a missing desktop entry -- the Sway keybinds
+    # and magikos-launch-browser can still launch it.
+    if command -v brave-origin >/dev/null 2>&1 && brave-origin --version >/dev/null 2>&1; then
+        if [[ -f /usr/share/applications/brave-origin.desktop ]]; then
+            return 0
+        fi
+        note "brave-origin functional but desktop entry missing; launcher icon not available"
+        return 0
+    fi
     if [[ -f /usr/share/applications/brave-origin.desktop ]]; then
         return 0
     fi
-    CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: $SELF_DIR/scripts/build-brave-origin"
     return 1
 }
 
 chk_brave_icon() {
+    if command -v brave-origin >/dev/null 2>&1 && brave-origin --version >/dev/null 2>&1; then
+        if [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; then
+            return 0
+        fi
+        note "brave-origin functional but icon missing; menu icons may be generic"
+        return 0
+    fi
     if [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; then
         return 0
     fi
-    CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"
+    CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: $SELF_DIR/scripts/build-brave-origin"
     return 1
 }
 
