@@ -63,9 +63,17 @@ stage_apply_patch() {
         return 0
     fi
     log "Applying Void port patch"
-    if ! git -C "$MAGIKOS_HOME" apply "$patch"; then
-        stage_err "patch failed to apply cleanly; upstream may have drifted"
-        stage_err "     inspect with: git -C $MAGIKOS_HOME apply --stat $patch"
+    local apply_err
+    if ! apply_err="$(git -C "$MAGIKOS_HOME" apply --verbose "$patch" 2>&1)"; then
+        # git's own message is the only useful diagnostic here: it names the
+        # exact file and hunk that no longer matches, which is what tells you
+        # upstream drifted. Swallowing it made this step unactionable.
+        stage_err "patch failed to apply against upstream $(git -C "$MAGIKOS_HOME" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        printf '%s\n' "$apply_err" | head -12 | while IFS= read -r line; do
+            stage_err "    $line"
+        done
+        stage_err "  the patch targets a different upstream revision; refresh it with:"
+        stage_err "    cd '$MAGIKOS_HOME' && git apply '$patch'"
         return 1
     fi
     ok "applied $(grep -c '^diff --git' "$patch") file changes"

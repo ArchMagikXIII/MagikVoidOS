@@ -47,6 +47,43 @@ ensure_sudo() {
     return 1
 }
 
+# Tools the installer needs in order to run at all. A fresh Void install has
+# none of these: git to clone upstream, curl to fetch the Brave .deb, tar to
+# unpack it, python3 to parse the .deb ar archive. The installer used to abort
+# asking for them by name, which made a fresh install impossible to complete.
+BOOTSTRAP_TOOLS=(git curl tar python3)
+
+# bootstrap_prerequisites
+#
+# Install any missing BOOTSTRAP_TOOLS, and nothing else. Split out from the
+# main package set on purpose: these are small, license-clean, and required
+# before the installer can even stage the runtime, so they must not sit behind
+# a preflight gate that the user cannot pass on a clean system.
+bootstrap_prerequisites() {
+    local missing=() c
+    for c in "${BOOTSTRAP_TOOLS[@]}"; do
+        have "$c" || missing+=("$c")
+    done
+
+    if ((${#missing[@]} == 0)); then
+        ok "installer prerequisites present (${BOOTSTRAP_TOOLS[*]})"
+        return 0
+    fi
+
+    log "Installing ${#missing[@]} prerequisite(s): ${missing[*]}"
+    ensure_sudo || return 1
+    if [[ $DRY_RUN -eq 1 ]]; then
+        _c sudo xbps-install -yS "${missing[@]}"
+        return 0
+    fi
+    sudo xbps-install -yS "${missing[@]}" || {
+        err "could not install prerequisites: ${missing[*]}"
+        err "     fix manually: sudo xbps-install -Syu ${missing[*]}"
+        return 1
+    }
+    return 0
+}
+
 # run_pacman_free_pkg_check <pkg> -> 0 if installed via xbps
 pkg_installed() { xbps-query "$1" >/dev/null 2>&1; }
 
