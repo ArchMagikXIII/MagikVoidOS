@@ -15,7 +15,7 @@ VOID_BASE_PACKAGES=(
 
     # Quickshell shell
     quickshell
-    qt5-qtquickcontrols2
+    qt5-quickcontrols2
     qt6-qtdeclarative
     qt6-qtwayland
     qt6-tools
