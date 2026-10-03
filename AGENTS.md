@@ -32,6 +32,33 @@ flow through normally.
 
 Void Linux, x86_64. Verified on Void with sway + quickshell 0.3.1.
 
+## Git access (SSH)
+
+`origin` is `git@github.com:ArchMagikXIII/MagikVoidOS.git`, i.e. push/fetch
+over SSH. Agents working this repo may use the maintainer's dedicated deploy
+key instead of prompting for credentials:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJeCv0YGt+ocbvDaj95+bogFbadBJOf5kA+PXS3B948Q magikxiii@void-magikos-void
+```
+
+The private half is **never** in this repo. It lives only on the maintainer's
+machine at `~/.ssh/id_ed25519_github`, mode `0600`, with a matching
+`~/.ssh/config` entry:
+
+```sshconfig
+Host github.com
+    IdentityFile ~/.ssh/id_ed25519_github
+    IdentitiesOnly yes
+    AddKeysToAgent yes
+```
+
+If that file is missing, do **not** try to synthesize a replacement key or ask
+for a passphrase in chat. Clone over HTTPS instead
+(`https://github.com/ArchMagikXIII/MagikVoidOS.git`) and push only when the
+maintainer supplies a token out of band. Rotate the deploy key by editing
+`Settings > Deploy keys` on the repo, not by committing a new one here.
+
 ## Rules for changing this repo
 
 1. **Never require root for the MagikOS runtime.** It stages to
@@ -190,6 +217,56 @@ bin/magikos-dev-font
 bin/magikos-file-select
 ```
 
+## Git remotes and credentials
+
+Two repos, deliberately on different transports:
+
+| repo | remote | why |
+| --- | --- | --- |
+| this port (`~/magikos-void`) | `git@github.com:ArchMagikXIII/MagikVoidOS.git` (SSH) | we push to it |
+| MagikOS runtime (`$MAGIKOS_HOME`) | `https://github.com/ArchMagikXIII/MagikOS` (HTTPS) | we only fetch; keeps GitHub auth from ever blocking `magikos-update` |
+
+### SSH key
+
+Auth to GitHub uses an ed25519 key, **not** a token.
+
+```
+private key  ~/.ssh/id_ed25519_github    (mode 600)
+public key   ~/.ssh/id_ed25519_github.pub (mode 644)
+config      ~/.ssh/config -> Host github.com pins this key, IdentitiesOnly yes
+fingerprint SHA256:JYzA0/K1F3+oDNAiIjQU2wUhzsi+9VX7Eod54csg3mg
+comment     magikxiii@void-magikos-void
+```
+
+The public key starts `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJeCv0...` and is
+registered on the `ArchMagikXIII` account. Verified with
+`ssh -T git@github.com` -> `Hi ArchMagikXIII!`.
+
+Rules:
+
+1. **Never commit the private key.** Only `.pub` ever goes into a repo, and
+   only if someone wants to publish it. `.gitignore` blocks `*.xbps`/`*.deb`;
+   scan with `git grep -InE 'PRIVATE KEY|ssh-ed25519 AAAA'` before pushing.
+2. **`IdentitiesOnly yes` in `~/.ssh/config`** means new keys will not silently
+   displace this one. If auth breaks, check that file before regenerating.
+3. **Verify auth before pushing**, not after a failed push:
+   `ssh -T git@github.com`.
+4. `known_hosts` already has `github.com` (ED25519), so there is no first-run
+   prompt.
+
+### Commit identity
+
+`git config user.email` is `magikxiii@localhost`. **GitHub ignores that
+address**, so commits do not link to the account or show on the profile. Set a
+real address before expecting attribution:
+
+```sh
+git -C ~/magikos-void config user.email "you@example.com"
+# retroactively fix existing commits:
+git -C ~/magikos-void rebase --root --exec \
+  'git commit --amend --no-edit --reset-author'
+```
+
 ## Plan
 
 ### Done
@@ -211,9 +288,19 @@ bin/magikos-file-select
 - [x] `install.sh --status`: 18 PASS/FAIL/WARN/SKIP checks, each FAIL naming
       its fix; runs automatically after every install
 - [x] Auto-pin software rendering on GPU-less machines (fixes the black screen)
+- [x] GitHub SSH auth (ed25519 key, pinned in `~/.ssh/config`) and
+      `origin` -> `git@github.com:ArchMagikXIII/MagikVoidOS.git`
 
 ### Next
 
+- [ ] Ship the icon fonts so Quickshell glyphs render: the shell resolves its
+      icon font through `Style.qml` (`barToken("icon-font")`, `iconFont`), and
+      the only `font.family` literal in the whole tree is `Liberation Sans`.
+      Nothing nerd/icon font is installed yet, so ~24 `iconFont` sites and the
+      Nerd Font codepoints in `magikos-menu.jsonc` will fall back to boxes.
+      Needs: a Nerd Font (JetBrainsMono Nerd Font / Iosevka Nerd Font) plus
+      `xdg-terminal-exec`, which `magikos-default-terminal` shells out to.
+      `foot` itself is already installed at `/usr/bin/foot`.
 - [ ] Install the Void base package set (needs sudo; index sync first)
 - [ ] Log into Sway on real hardware and confirm the bar renders (only
       headless/software rendering has been exercised so far)
