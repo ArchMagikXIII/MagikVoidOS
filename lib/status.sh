@@ -145,6 +145,35 @@ chk_runtime_clone() {
     [[ -d $MAGIKOS_HOME/.git ]]; local rc=$?; CHECK_HINT="fix with: ./install.sh --no-packages"; return $rc
 }
 
+# Catch the single most damaging mistake: running the installer under `sudo`.
+#
+# `sudo ./install.sh` sets $HOME=/root, so the runtime clone, the sway config,
+# the Nerd Font and the fontconfig alias all land in root's home. The install
+# then reports success while nothing is visible to the desktop session, and
+# every downstream check fails for no visible reason. Detect it by ownership.
+chk_no_root_ownership() {
+    local me owner bad=""
+    me="$(id -un)"
+
+    # Smoking gun: nothing in your home, but a copy in /root. That is what
+    # `sudo ./install.sh` leaves behind.
+    if [[ ! -d $MAGIKOS_HOME && -d /root/.local/share/magikos ]]; then
+        CHECK_HINT="\$HOME has no runtime, but /root/.local/share/magikos exists:"$'\n'"the installer was run under sudo, so it staged into root's home"$'\n'"  ./install.sh --no-packages"$'\n'"  sudo rm -rf /root/.local/share/magikos /root/.config/sway"
+        return 1
+    fi
+
+    # Anything under your home that root owns is also from a sudo run.
+    for d in "$MAGIKOS_HOME" "$MAGIKOS_USER_SWAY" "$FONT_DIR"; do
+        [[ -d $d ]] || continue
+        owner="$(stat -c '%U' "$d" 2>/dev/null)" || continue
+        [[ -n $owner && $owner != "$me" ]] && bad+="  $d is owned by $owner"$'\n'
+    done
+    if [[ -z $bad ]]; then return 0; fi
+    CHECK_HINT="paths under \$HOME owned by another user:"$'\n'"$bad"\
+"the installer must run as your normal user so \$HOME points at your home:"$'\n'"  ./install.sh --no-packages"$'\n'"  sudo chown -R $(id -un):$(id -gn) \$HOME/.local/share/magikos \$HOME/.config/sway"
+    return 1
+}
+
 chk_port_applied() {
     # Three distinct causes, previously collapsed into one opaque FAIL:
     #   1. no runtime at all          -> nothing has been staged yet
@@ -445,7 +474,8 @@ status_report() {
 
     printf '\n\033[1m  MagikOS runtime\033[0m\n'
     check "runtime dir exists ($MAGIKOS_HOME)" chk_runtime_dir
-    check "runtime is a git clone"      chk_runtime_clone
+check "runtime is a git clone"    chk_runtime_clone
+    check "runtime not owned by root" chk_no_root_ownership
     check "Void port patch applied"     chk_port_applied
     check "pkg backend detects xbps"    chk_backend
     check "pkg backend functions load"  chk_backend_funcs

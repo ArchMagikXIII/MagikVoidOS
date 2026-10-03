@@ -31,6 +31,50 @@ source "$SELF_DIR/lib/brave-origin.sh"
 # shellcheck source=lib/status.sh
 source "$SELF_DIR/lib/status.sh"
 
+# `sudo ./install.sh` breaks this installer, silently.
+#
+# Everything user-facing lives under $HOME: the runtime clone, the sway config,
+# the Nerd Font, and the fontconfig alias that makes bar glyphs render. Under
+# `sudo`, $HOME is /root, so all of it lands in root's home where the desktop
+# session cannot see it -- the install reports success and every check then
+# fails. XDG_CONFIG_HOME/XDG_DATA_HOME shift with it.
+#
+# Only two things here actually need root (xbps, /opt) and both already sudo
+# internally. So when invoked via sudo, hand the whole job to the real user
+# rather than half-doing it as root.
+if ((EUID == 0)); then
+    _target_user="${SUDO_USER:-}"
+    if [[ -z $_target_user || $_target_user == root ]]; then
+        if [[ -t 0 ]]; then
+            printf '%s\n' \
+"Run this as your normal user, not root:" \
+"" \
+"    ./install.sh" \
+"" \
+"Only xbps and /opt need root, and the installer already asks for that itself." \
+"Running it as root stages the runtime, fonts and fontconfig alias into /root," \
+"where your desktop session cannot see them." >&2
+            exit 2
+        fi
+    else
+        _target_home="$(getent passwd "$_target_user" | cut -d: -f6)"
+        [[ -n $_target_home ]] || _target_home="/home/$_target_user"
+        printf '%s\n' \
+"=> 'sudo ./install.sh' would stage everything into /root." \
+"=> Re-running as $_target_user (\$_HOME=$_target_home) instead." >&2
+        # Preserve the user's session environment, otherwise Qt/DBus lookups
+        # and PATH differ from a real login shell.
+        exec sudo -u "$_target_user" \
+            env HOME="$_target_home" \
+                USER="$_target_user" LOGNAME="$_target_user" \
+                XDG_CONFIG_HOME="$_target_home/.config" \
+                XDG_DATA_HOME="$_target_home/.local/share" \
+                XDG_CACHE_HOME="$_target_home/.cache" \
+                PATH="$_target_home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            bash "$SELF_DIR/install.sh" "$@"
+    fi
+fi
+
 DO_PACKAGES=1
 DO_BRAVE=1
 DO_STATUS=0
