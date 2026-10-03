@@ -231,28 +231,62 @@ chk_sway_nofullprefix() {
 
 chk_sway_validate() {
     have sway || { CHECK_HINT="install sway: sudo xbps-install -S sway"; return 1; }
-    # Headless backend: a real DRM device is usually unavailable to a VM/TTY.
-    local out rc
-    out="$(WLR_BACKENDS=headless WLR_RENDERER=pixman \
-           sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"
-    rc=$?
-    if ((rc == 0)); then return 0; fi
 
-    # When validation fails sway discards the ENTIRE config, includes included,
-    # so the user loses keybinds, output config and autostart at once. That is
-    # why this reports the offending file and line rather than a bare FAIL.
-    local where
-    where="$(printf '%s' "$out" |
-             awk 'match($0, /Error on line [0-9]+/) {
-                        ln = substr($0, RSTART, RLENGTH)
-                        f = ""
-                        if (match($0, /\([^()]*\)/)) f = substr($0, RSTART+1, RLENGTH-2)
-                        if (f != "") seen[f] = 1
-                        printf "          %s in %s\n", ln, f
-                    }
-                    END { if (length(seen) == 0) print "          (no file/line detail)" }' |
-             head -6)"
-    CHECK_HINT="sway --validate failed; every include is discarded, so keybinds are gone too:"$'\n'"${where:-(run: sway --validate -c ~/.config/sway/config)}"$'\n'"fix the line above, then: ./install.sh --no-packages"
+    # Try the plain invocation FIRST. `sway --validate` only parses config, so
+    # it needs no working DRM device, and forcing WLR_BACKENDS=headless can
+    # *cause* a failure on hosts whose wlroots has no headless backend:
+    #   [ERROR] [wlr] unrecognized backend 'headless'
+    #   [ERROR] [sway/server.c:270] Unable to create backend
+    # That error has no "Error on line" in it, which is why an earlier version
+    # of this check reported "(no file/line detail)" and told the user nothing.
+    # Headless is kept only as a fallback for a host that genuinely cannot
+    # reach a seat.
+    local out rc how bad=0
+    out="$(timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc=$?
+    how="plain"
+    # sway 1.12 exits 0 even when the config failed to load, printing only
+    # "Error(s) loading config!". A pure exit-code check therefore reports a
+    # broken config as fine -- which is exactly why missing keybinds went
+    # unreported. Treat config ERRORs in the output as a failure regardless
+    # of the exit status.
+    printf '%s' "$out" | grep -q 'Error(s) loading config!' && bad=1
+    if ((rc != 0 || bad)); then
+        local out2 rc2 bad2=0
+        out2="$(WLR_BACKENDS=headless WLR_RENDERER=pixman \
+               timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc2=$?
+        printf '%s' "$out2" | grep -q 'Error(s) loading config!' && bad2=1
+        # Keep whichever attempt got further: the plain run reports real config
+        # errors, the headless run only rescues backend initialisation.
+        if ((rc2 == 0 && bad2 == 0)) ||
+           { ((rc2 != 0 || bad2 == 1)) && [[ $out2 != *"Unable to create backend"* && $out2 != *"unrecognized backend"* ]]; }; then
+            out="$out2"; rc=$rc2; bad=$bad2; how="headless"
+        fi
+    fi
+    if ((rc == 0 && bad == 0)); then return 0; fi
+
+    # Always surface the raw output. A config error carries the offending file
+    # and line; a backend error does not, and that distinction is the whole
+    # diagnosis. Do not summarise it away.
+    local detail
+    detail="$(printf '%s\n' "$out" |
+              grep -vE 'pci id|\[INFO\]' |
+              sed -e 's/^[0-9:.]* \[ERROR\] //' -e 's/^/          /' |
+              head -8)"
+    [[ -n $detail ]] || detail="          (sway printed nothing; run: sway --validate -c $MAGIKOS_USER_SWAY/config)"
+
+    local hint
+    hint="sway --validate failed (via $how). Sway discards EVERY include, so your"
+    hint+=$'\n'"keybinds, output config and autostart are all gone too:"
+    hint+=$'\n'"$detail"
+
+    # Distinguish the two failure classes explicitly.
+    if printf '%s' "$out" | grep -qE 'Unable to create backend|unrecognized backend'; then
+        hint+=$'\n'"this is a BACKEND problem, not a config problem: sway could not"
+        hint+=$'\n'"initialise a backend even headlessly. Re-check by hand:"
+        hint+=$'\n'"  sway --validate -c $MAGIKOS_USER_SWAY/config"
+    fi
+    hint+=$'\n'"fix the problem above, then: ./install.sh --no-packages"
+    CHECK_HINT="$hint"
     return 1
 }
 
