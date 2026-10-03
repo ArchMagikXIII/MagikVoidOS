@@ -172,6 +172,23 @@ brave_build() {
         err "members found: $(find "$w" -maxdepth 1 -type f -printf '%f ' 2>/dev/null)"
         return 1
     fi
+
+    # Check the decompressor BEFORE asking tar to run. GNU tar does not link
+    # xz/zstd, it execs them, so a missing binary surfaces as the deeply
+    # unhelpful "tar (child): xz: Cannot exec" -- and with the status of tar
+    # ignored that became "payload dir not found". Name the package instead.
+    local comp="${data##*.}" need=""
+    case "$comp" in
+        xz)  need=xz  ;;
+        zst) need=zstd ;;
+    esac
+    if [[ -n $need ]] && ! have "$need"; then
+        err "the .deb data member is $comp-compressed but '$need' is not installed"
+        err "  GNU tar execs the decompressor; it will not fall back"
+        err "fix with: sudo xbps-install -S $need"
+        return 1
+    fi
+
     log "Unpacking $(basename "$data")"
     mkdir -p "$w/root" || return 1
 
@@ -185,7 +202,7 @@ brave_build() {
         local tver
         tver="$(tar --version 2>/dev/null | head -1)"
         err "  tar: $tver"
-        case "${data##*.}" in
+        case "$comp" in
             zst) err "  this member is zstd-compressed; install zstd: sudo xbps-install -S zstd" ;;
             xz)  err "  this member is xz-compressed; install xz: sudo xbps-install -S xz" ;;
         esac

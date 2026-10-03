@@ -47,6 +47,14 @@ VOID_BASE_PACKAGES=(
     Waybar
     jq
 
+    # Decompressors. NOT optional: the Brave builder unpacks a .deb whose data
+    # member is xz- or zstd-compressed, and GNU tar shells out to the `xz` /
+    # `zstd` binaries rather than linking them. Without these, extraction dies
+    # with "xz: Cannot exec" and the build reports a missing payload dir.
+    # xbps .xbps files are zstd too, so tools that inspect them need it.
+    xz
+    zstd
+
     # Fonts + icons for the shell. fontconfig is not optional: fc-cache
     # registers the Nerd Font and fc-match verifies it, and the bar's glyphs
     # only work if "monospace" resolves to it.
