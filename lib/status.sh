@@ -275,11 +275,23 @@ chk_env() {
 }
 
 chk_brave() {
-    [[ -x $BRAVE_PREFIX/brave ]]; local rc=$?; CHECK_HINT="not installed"$'\n'"fix with: ./scripts/build-brave-origin"; return $rc
+    if [[ -x $BRAVE_PREFIX/brave ]]; then
+        return 0
+    fi
+    if [[ -x /home/$USER/.local/share/brave-origin/brave ]]; then
+        return 0
+    fi
+    local rc=$?; CHECK_HINT="not installed"$'\n'"fix with: ./scripts/build-brave-origin"; return 1
 }
 
 chk_brave_cmd() {
-    command -v brave-origin >/dev/null 2>&1 || [[ -x /usr/bin/brave-origin ]]; local rc=$?; CHECK_HINT="/usr/bin/brave-origin missing"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
+    if command -v brave-origin >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -x /usr/bin/brave-origin ]] || [[ -x /home/$USER/.local/share/magikos/bin/brave-origin ]]; then
+        return 0
+    fi
+    CHECK_HINT="/usr/bin/brave-origin missing"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
 }
 
 chk_brave_desktop() {
