@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Reconcile a Void install with a graphical (LightDM) session.
+#
+#   scripts/fix-desktop-gettys            # apply (needs root)
+#   scripts/fix-desktop-gettys --dry-run  # show the plan, change nothing
+#
+# Two problems, both left behind by the Void installer rather than by
+# install.sh here:
+#
+# 1. agetty is enabled on tty1 at the same time LightDM is. Both want tty1,
+#    so the getty respawns under runsv every time it is exited and the user
+#    has to type `exit` two or three times before LightDM wins the VT. The
+#    desktop then appears to start "late", with errors before it.
+#
+# 2. /etc/lightdm/lightdm.conf is still Void's live-image default:
+#        autologin-user=anon        <- no such user exists on this host
+#        autologin-session=xfce     <- this host runs sway
+#        user-session=xfce
+#    LightDM cannot autologin as a nonexistent user, so it logs an error on
+#    every boot and drops to the greeter.
+#
+# This deliberately does NOT restart LightDM. Restarting it would terminate
+# the running sway session, so the getty changes take effect immediately while
+# the lightdm.conf edits need a reboot to be observed.
+
+set -uo pipefail
+
+DRY_RUN=0
+for arg in "$@"; do
+  case $arg in
+    --dry-run) DRY_RUN=1 ;;
+    -h | --help)
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+LIGHTDM_CONF=/etc/lightdm/lightdm.conf
+# The getty that actually collides with LightDM. tty2..tty6 are separate
+# virtual terminals and do not interfere, so they are left alone unless asked.
+DM_TTY=${DM_TTY:-tty1}
+
+log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+ok() { printf '  \033[32mok\033[0m    %s\n' "$*"; }
+warn() { printf '  \033[33mwarn\033[0m  %s\n' "$*"; }
+err() { printf '  \033[31merr\033[0m   %s\n' "$*" >&2; }
+run() { if ((DRY_RUN)); then printf '  \033[2m[dry]\033[0m %s\n' "$*"; else "$@"; fi; }
+
+# --- root gate -------------------------------------------------------------
+# Everything below writes outside $HOME, so fail loudly rather than half-applying.
+if (( ! DRY_RUN )) && (( EUID != 0 )); then
+  err "needs root: try 'pkexec $0' (or sudo $0)"
+  exit 1
+fi
+
+# --- 1. the getty that fights LightDM --------------------------------------
+getty_link=/var/service/agetty-$DM_TTY
+if [[ -L $getty_link ]]; then
+  run rm "$getty_link"
+  ok "disabled agetty-$DM_TTY (was competing with LightDM on $DM_TTY)"
+elif [[ -e $getty_link ]]; then
+  warn "$getty_link exists but is not a symlink; leaving it alone"
+else
+  ok "agetty-$DM_TTY already disabled"
+fi
+
+# --- 2. the live-image lightdm defaults ------------------------------------
+if [[ ! -f $LIGHTDM_CONF ]]; then
+  warn "$LIGHTDM_CONF not found; skipping"
+  exit 0
+fi
+
+# Comment the dead keys out rather than deleting them, and say why inline, so
+# the change is legible in the file and reversible without the backup.
+if grep -qE '^[[:space:]]*autologin-user=' "$LIGHTDM_CONF"; then
+  backup="$LIGHTDM_CONF.bak.$(date +%Y%m%d%H%M%S)"
+  run cp -a "$LIGHTDM_CONF" "$backup"
+  (( ! DRY_RUN )) && ok "backup: $backup"
+
+  run sed -i \
+    -e 's|^\([[:space:]]*\)autologin-user=.*|\1# autologin disabled by fix-desktop-gettys: this host has no autologin user|' \
+    -e 's|^\([[:space:]]*\)autologin-user-timeout=.*|\1# autologin disabled by fix-desktop-gettys|' \
+    -e 's|^\([[:space:]]*\)autologin-session=.*|\1# autologin disabled by fix-desktop-gettys: this host runs sway, not xfce|' \
+    "$LIGHTDM_CONF"
+
+  # The greeter should offer sway rather than defaulting to a session this
+  # host does not use. sway.desktop ships in /usr/share/wayland-sessions.
+  if grep -qE '^[[:space:]]*user-session=' "$LIGHTDM_CONF"; then
+    run sed -i -e 's|^\([[:space:]]*\)user-session=.*|\1user-session=sway|' "$LIGHTDM_CONF"
+  else
+    run sed -i "/^\[Seat:\*\]/a user-session=sway" "$LIGHTDM_CONF"
+  fi
+  ok "cleaned up $LIGHTDM_CONF"
+else
+  ok "no live-image autologin keys left in $LIGHTDM_CONF"
+fi
+
+# --- report ----------------------------------------------------------------
+log "done"
+if ((DRY_RUN)); then
+  printf '  \033[2mnothing was changed\033[0m\n'
+fi
+cat <<'NOTE'
+
+  The getty is gone immediately. The lightdm.conf edits are read at LightDM
+  start, so log out and back in (or reboot) to see them.
+NOTE
