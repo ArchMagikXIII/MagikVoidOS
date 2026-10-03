@@ -346,8 +346,74 @@ chk_shell_font() {
     return 1
 }
 
+# Every MagikOS theme background is .webp. Qt6 decodes WebP through a plugin,
+# and Void's qt6-base ships only gif/ico/jpeg/svg, so without qt6-imageformats
+# Background.qml logs "Error decoding: ... Unsupported image format", the
+# wallpaper renders blank, and the picker appears to select images that never
+# appear. Checking for the plugin is more reliable than decoding a file,
+# because a broken plugin still lists the file.
+chk_qt_webp() {
+    local d
+    for d in /usr/lib/qt6/plugins/imageformats /usr/lib64/qt6/plugins/imageformats; do
+        if compgen -G "$d/libqwebp.so" >/dev/null; then
+            return 0
+        fi
+    done
+    CHECK_HINT="Qt6 has no WebP plugin; .webp theme backgrounds cannot be decoded"$'\n'"the wallpaper will stay blank and the picker will look broken"$'\n'"fix with: sudo xbps-install -S qt6-imageformats"
+    return 1
+}
+
 chk_wallpaper() {
     [[ -f $WALLPAPER ]]; CHECK_HINT="no wallpaper at $WALLPAPER (Sway starts black)"$'\n'"fix: put any .jpg there, or set WALLPAPER=/path/to/image"; return $?
+}
+
+# Void has neither uwsm-app nor systemd-run, but 26 magikos-* scripts launch
+# apps through uwsm-app and 6 use systemd-run. Every call is backgrounded with
+# output discarded, so a missing launcher means the shell says "launching X"
+# and nothing ever appears -- a silent failure with no error anywhere.
+chk_launch_shims() {
+    local missing=() mispathed=()
+    local s want
+    for s in uwsm-app systemd-run; do
+        [[ -x "$MAGIKOS_HOME/bin/$s" ]] || missing+=("$s")
+    done
+    if ((${#missing[@]})); then
+        CHECK_HINT="missing: ${missing[*]}"$'\n'"apps launched from the menu die silently because these do not exist on Void"$'\n'"fix with: ./install.sh --no-packages"
+        return 1
+    fi
+    # A shim that exists but is shadowed further down PATH does the same thing
+    # as no shim at all, so confirm PATH actually resolves to ours.
+    for s in uwsm-app systemd-run; do
+        want="$MAGIKOS_HOME/bin/$s"
+        if [[ -x "$MAGIKOS_HOME/bin/$s" ]]; then
+            local got
+            got="$(command -v "$s" 2>/dev/null)"
+            [[ $got == "$want" ]] || mispathed+=("$s -> ${got:-<nothing>}")
+        fi
+    done
+    if ((${#mispathed[@]})); then
+        CHECK_HINT="shadowed on PATH: ${mispathed[*]}"$'\n'"another copy earlier in PATH wins, so the shim never runs"$'\n'"fix with: ./install.sh --no-packages"
+        return 1
+    fi
+    return 0
+}
+
+# The wallpaper and theme pickers both read from theme state, so with no theme
+# installed they open with nothing in them and look broken.
+chk_theme() {
+    local name_file="$HOME/.local/state/magikos/current/theme.name"
+    if [[ ! -s $name_file ]]; then
+        CHECK_HINT="no theme set, so the wallpaper and theme pickers are both empty"$'\n'"fix with: ./install.sh --no-packages"
+        return 1
+    fi
+    local n
+    n="$(find "$HOME/.local/state/magikos/current/theme/backgrounds" \
+        -maxdepth 1 -type f 2>/dev/null | wc -l)"
+    if ((n == 0)); then
+        CHECK_HINT="theme $(<"$name_file") has no backgrounds, so the wallpaper picker is empty"$'\n'"fix with: magikos-theme-bg-install"
+        return 1
+    fi
+    return 0
 }
 
 # A machine with no usable 3D GPU (VM with a paravirtual adapter, headless
@@ -492,6 +558,9 @@ check "runtime is a git clone"    chk_runtime_clone
     printf '\n\033[1m  Quickshell + env\033[0m\n'
     check "shell.json staged"            chk_shell_json
     check "shell font (bar glyphs)"      chk_shell_font
+    check "app launch shims (uwsm/systemd-run)" chk_launch_shims
+    check "Qt can decode .webp wallpapers" chk_qt_webp
+    check "theme set (pickers work)"     chk_theme
     check "MAGIKOS_PATH in ~/.profile"   chk_env
     check "Quickshell log clean"         chk_shell_log
     check "sway session running"         chk_sway_session

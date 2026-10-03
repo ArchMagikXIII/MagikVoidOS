@@ -25,6 +25,11 @@ VOID_BASE_PACKAGES=(
     qt5-declarative
     qt5-quickcontrols2
     qt5-wayland
+    # Every MagikOS theme background is .webp, and Qt6 has no WebP decoder
+    # without this: Background.qml logs "Error decoding: ... Unsupported image
+    # format" and the wallpaper picker shows nothing. Void's qt6-base ships only
+    # gif/ico/jpeg/svg; this provides plugins/imageformats/libqwebp.so.
+    qt6-imageformats
 
     # Terminal + bar/system helpers referenced by bindings & shell
     foot
