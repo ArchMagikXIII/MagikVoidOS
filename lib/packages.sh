@@ -52,6 +52,8 @@ VOID_BASE_PACKAGES=(
     font-liberation-ttf
     dejavu-ttf
     noto-fonts-ttf
+    nerd-fonts-ttf
+    nerd-fonts-symbols-ttf
 
     # Portal / session plumbing
     xdg-desktop-portal
