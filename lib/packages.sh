@@ -47,7 +47,10 @@ VOID_BASE_PACKAGES=(
     Waybar
     jq
 
-    # Fonts + icons for the shell
+    # Fonts + icons for the shell. fontconfig is not optional: fc-cache
+    # registers the Nerd Font and fc-match verifies it, and the bar's glyphs
+    # only work if "monospace" resolves to it.
+    fontconfig
     liberation-fonts-ttf
     dejavu-fonts-ttf
     noto-fonts-ttf
