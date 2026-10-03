@@ -335,6 +335,13 @@ even though the shell auto-restarts; that is intentional. One crash was seen
 while switching themes with the WebP plugin missing, but it has not reproduced
 in a loop, so treat it as a lead, not an established cause.
 
+- **`quickshell.log` is append-only, so a whole-file grep never clears.**
+  `chk_shell_log` originally counted every `ERROR` ever written, so one crash
+  made it FAIL permanently -- after the cause was fixed and the shell was
+  healthy -- which reads as "I fixed it and it still says broken". It now
+  scans only from the last `Launching config:` line, i.e. the current run.
+  Keep any check over an append-only log scoped to the current run.
+
 ## Shell fonts
 
 The bar draws Nerd Font codepoints using the *default* Qt family:
