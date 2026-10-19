@@ -238,13 +238,43 @@ install_nvidia_driver() {
         fi
     fi
 
-    # Rebuild the initramfs and run the dkms build hook for the RUNNING kernel.
-    # Void's dkms framework builds at the kernel package's post-install hook,
-    # so a forced reconfigure is the reliable way to make the module appear.
+    # Register and build the module explicitly. Void's dkms kernel hook only
+    # BUILDS modules already listed in /var/lib/dkms/*; the nvidia package
+    # ships its source at /usr/src/nvidia-<ver> but nothing reliably ran
+    # `dkms add` -- on this kernel the hook ran with /var/lib/dkms EMPTY and
+    # built nothing. So add + install straight into the running kernel here;
+    # both are idempotent (already-registered / already-built are success).
+    local mod_src mod_ver=""
+    mod_src="$(ls -d /usr/src/nvidia-* /usr/src/nvidia 2>/dev/null | head -1)"
+    if [[ -n $mod_src && -f $mod_src/dkms.conf ]]; then
+        mod_ver="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' "$mod_src/dkms.conf" | head -1)"
+    fi
+    if [[ -z $mod_ver ]]; then
+        err "cannot determine the nvidia dkms module version (no $mod_src/dkms.conf)"
+        err "     check: ls /usr/src/ | grep nvidia"
+        return 1
+    fi
+    if ((DRY_RUN)); then
+        _c sudo dkms install nvidia/$mod_ver -k "$(uname -r)"
+    else
+        sudo dkms add nvidia/$mod_ver >/dev/null 2>&1 || true
+        if ! sudo dkms install nvidia/$mod_ver -k "$(uname -r)"; then
+            err "dkms build of nvidia/$mod_ver failed"
+            err "     log: /var/lib/dkms/nvidia/$mod_ver/build/make.log"
+            err "     most common cause: driver too old for kernel $(uname -r),"
+            err "     or kernel headers mismatching $(uname -r)"
+            err "     retry: sudo dkms install nvidia/$mod_ver -k $(uname -r)"
+            return 1
+        fi
+    fi
+
+    # Rebuild the initramfs for the RUNNING kernel (the nouveau blacklist and
+    # the nvidia module need to be known to dracut), and let the kernel hook
+    # run depmod over the freshly built .ko.
     if pkg_installed "$KERN_PKG"; then
-        log "Reconfiguring $KERN_PKG (rebuilds initramfs, runs the dkms hook)"
+        log "Reconfiguring $KERN_PKG (rebuilds initramfs, runs depmod)"
         _c sudo xbps-reconfigure -f "$KERN_PKG" || {
-            err "kernel reconfigure failed; NVIDIA module may not be built"
+            err "kernel reconfigure failed"
             err "     fix manually: sudo xbps-reconfigure -f $KERN_PKG"
             return 1
         }
@@ -256,13 +286,11 @@ install_nvidia_driver() {
     # Verify the module actually got built -- an install that says success
     # while leaving no .ko is worse than an honest failure (rule 8).
     if [[ $DRY_RUN -eq 0 ]] && have dkms; then
-        if sudo dkms status 2>/dev/null | grep -q "^nvidia/.*installed"; then
+        if find "/lib/modules/$(uname -r)" -name 'nvidia.ko*' 2>/dev/null | grep -q .; then
             ok "NVIDIA module built for $(uname -r)"
         else
-            err "dkms reports no built nvidia module"
-            err "     check: sudo dkms status"
-            err "     most common cause: header/kernel mismatch"
-            err "     retry: sudo xbps-reconfigure -f $KERN_HEADERS_PKG"
+            err "no nvidia.ko under /lib/modules/$(uname -r) after building"
+            err "     check: sudo dkms status ; cat /var/lib/dkms/nvidia/$mod_ver/build/make.log 2>/dev/null"
             return 1
         fi
     fi
@@ -424,26 +452,42 @@ cat <<'EOF'
 # the conservative default; zstd typically compresses ~3:1.
 #
 # Runit service: /etc/rc.local is NOT sourced on Void boot, so this has to be
-# a proper /etc/sv service.
+# a proper /etc/sv service. runsv restarts this script as soon as it exits,
+# so every step must tolerate re-running on a device that has already been
+# configured: re-writing disksize on a live device returns EBUSY, which is
+# exactly how a first-run mkswap failure used to become a permanent
+# crash-loop that never reached swapon. All output goes to a file because
+# runsv discards it.
 set -e
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+exec >>/var/log/zramswap.log 2>&1
 
-exec 2>&1
+echo "=== $(date) ==="
 
-# Idempotent: if zram0 is already swapped on, do nothing.
 if swapon --show=NAME --noheadings 2>/dev/null | grep -qw /dev/zram0; then
     echo "zram0 already active"
     exit 0
 fi
 
-modprobe zram
-# num_devices defaults to 1; be explicit so two runs never race for zram0.
+if [ ! -d /sys/block/zram0 ]; then
+    modprobe zram
+fi
+
 total_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 size_bytes=$(( total_kb * 1024 / 2 ))
-echo zstd > /sys/block/zram0/comp_algorithm
-echo "$size_bytes" > /sys/block/zram0/disksize
+
+# comp_algorithm is settable only while disksize is 0; disksize is settable
+# only from 0. Tolerate "already configured" so the second restart continues
+# where the first run stopped instead of dying on EBUSY.
+printf '%s\n' zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+if [ "$(cat /sys/block/zram0/disksize)" -eq 0 ]; then
+    echo "$size_bytes" > /sys/block/zram0/disksize
+fi
+
 mkswap /dev/zram0
 swapon -p 100 /dev/zram0
-echo "zram0 active: ${size_bytes} bytes, zstd, priority 100"
+echo "zram0 active: $(cat /sys/block/zram0/disksize) bytes, zstd, priority 100"
 EOF
 }
 
@@ -477,11 +521,22 @@ setup_zramswap() {
 
     if [[ -e /var/service/zramswap ]]; then
         if ((DRY_RUN)); then
-            _c sudo sv restart zramswap
+            _c bash -c "rewrite $ZRAM_SERVICE_DIR/{run,finish} and sudo sv restart zramswap"
             return 0
         fi
         ensure_sudo || return 1
-        log "zramswap service exists but /dev/zram0 is not swapped on -- restarting it"
+        # The service exists but /dev/zram0 is not swapped on: the most likely
+        # cause is an older run script that crashed mid-sequence. Rewrite the
+        # files (keep the content) and restart, instead of just restarting the
+        # same broken script forever.
+        printf '%s' "rewriting $ZRAM_SERVICE_DIR/{run,finish} (service was not producing swap)"
+        _c sudo mkdir -p "$ZRAM_SERVICE_DIR" || return 1
+        if ! zram_service_run | sudo tee "$ZRAM_SERVICE_DIR/run" >/dev/null \
+           || ! zram_service_finish | sudo tee "$ZRAM_SERVICE_DIR/finish" >/dev/null \
+           || ! sudo chmod 755 "$ZRAM_SERVICE_DIR/run" "$ZRAM_SERVICE_DIR/finish"; then
+            err "could not rewrite $ZRAM_SERVICE_DIR/{run,finish}"
+            return 1
+        fi
         sudo sv restart zramswap || {
             err "could not restart the zramswap service"
             err "     fix manually: sudo sv restart zramswap"
@@ -493,7 +548,7 @@ setup_zramswap() {
             return 0
         fi
         err "zramswap restarted but /dev/zram0 is still not swapped on"
-        err "     check: sudo sv status zramswap"
+        err "     check: sudo sv status zramswap ; cat /var/log/zramswap.log"
         return 1
     fi
 
@@ -540,7 +595,7 @@ setup_zramswap() {
         ok "zram swap active"
     else
         err "zramswap service enabled but /dev/zram0 is not swapped on"
-        err "     check the service log: sv status zramswap ; cat /var/log/zramswap"
+        err "     check the service log: sudo sv status zramswap ; cat /var/log/zramswap.log"
         err "     then: sudo sv restart zramswap && swapon --show"
         return 1
     fi
