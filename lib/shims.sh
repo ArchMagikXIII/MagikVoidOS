@@ -417,12 +417,17 @@ ensure_default_theme() {
         return 0
     fi
 
-    if ! have magikos-theme-set; then
-        warn "magikos-theme-set not found; wallpaper/theme pickers stay empty"
+    # Resolve the setter by path, not `command -v`: $MAGIKOS_HOME/bin is only
+    # on PATH inside the Sway session (and the sudo re-exec path deliberately
+    # resets PATH), so requiring it here made every non-session install run
+    # report "magikos-theme-set not found" and leave the pickers empty.
+    local setter="$MAGIKOS_HOME/bin/magikos-theme-set"
+    if [[ ! -x $setter ]]; then
+        warn "magikos-theme-set not found at $setter; wallpaper/theme pickers stay empty"
         return 0
     fi
 
-    local themes="${MAGIKOS_PATH:-$HOME/.local/share/magikos}/themes"
+    local themes="${MAGIKOS_PATH:-$MAGIKOS_HOME}/themes"
     local theme="$MAGIKOS_DEFAULT_THEME"
     if [[ ! -d "$themes/$theme" ]]; then
         theme="$(find "$themes" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | head -n1)"
@@ -433,11 +438,17 @@ ensure_default_theme() {
     fi
 
     log "Applying default theme: $theme"
-    if _c magikos-theme-set "$theme" >/dev/null; then
+    # The theme scripts resolve their helpers (jq, magikos-hook, sibling
+    # magikos-* scripts) by name through PATH, so provide the runtime bin dir
+    # here instead of depending on the caller's session environment.
+    if ( PATH="$MAGIKOS_HOME/bin:$PATH"
+         MAGIKOS_PATH="${MAGIKOS_PATH:-$MAGIKOS_HOME}"
+         export PATH MAGIKOS_PATH
+         _c "$setter" "$theme" ) >/dev/null; then
         ok "default theme set: $theme"
     else
         warn "could not set default theme; pickers will stay empty"
-        warn "fix with: magikos-theme-set $theme"
+        warn "fix with: PATH=\"\$MAGIKOS_HOME/bin:\$PATH\" magikos-theme-set $theme"
         return 1
     fi
 }

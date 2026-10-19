@@ -58,8 +58,14 @@ stage_apply_patch() {
         stage_err "no git clone at $MAGIKOS_HOME; cannot apply the Void port patch"
         return 1
     fi
-    if git -C "$MAGIKOS_HOME" status --porcelain | grep -q .; then
-        ok "Void port patch already applied (working tree has local changes)"
+    # "Already applied" must be tested with the patch itself, not by looking
+    # for any local change: the sway overrides and the launch shims live in
+    # this same working tree, so "working tree is dirty" was true even when
+    # the port patch had never applied -- which is how a failed apply got
+    # reported as done on the next run. A reverse --check succeeds only when
+    # every hunk of the patch is present.
+    if git -C "$MAGIKOS_HOME" apply --reverse --check "$patch" >/dev/null 2>&1; then
+        ok "Void port patch already applied"
         return 0
     fi
     log "Applying Void port patch"
@@ -144,20 +150,38 @@ EOF
     #    the parent dir if we can, but do NOT fabricate an image: an empty
     #    file would make swaybg fail worse than a missing one.
     if [[ -f $dir/appearance.conf ]]; then
-        local wl_set=0
-        grep -q '^set $wallpaper ' "$dir/appearance.conf" && wl_set=1
-        if ((wl_set)) && [[ ! -f $WALLPAPER ]]; then
-            ensure_dir "$(dirname "$WALLPAPER")" "wallpaper dir" || true
-            if ((DRY_RUN)) && [[ ! -d $(dirname "$WALLPAPER") ]]; then
-                printf '  \033[2mplan\033[0m  would create %s\n' "$(dirname "$WALLPAPER")"
-            elif [[ ! -f $WALLPAPER ]]; then
-                stage_warn "no wallpaper at $WALLPAPER"
-                stage_warn "     Sway will start with a black background."
-                stage_warn "     fix by dropping any .jpg there, or set WALLPAPER=/path/to/img"
+        local wl_img
+        # Prefer the configured WALLPAPER, falling back to any image already
+        # in the wallpapers directory so the user never has to manually fix
+        # a dangling bg line.
+        if [[ -f $WALLPAPER ]]; then
+            wl_img="$WALLPAPER"
+        else
+            local d
+            d="$(dirname "$WALLPAPER")"
+            ensure_dir "$d" "wallpaper dir" || true
+            wl_img="$(find "$d" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | sort | head -n1)"
+        fi
+
+        if [[ -n $wl_img && -f $wl_img ]]; then
+            # Rewrite both forms: 'set $wallpaper <path>' and
+            # 'output * bg <path> fill' (and 'output * bg <path>' without fill).
+            _c sed -i \
+                -e "s|^set \$wallpaper .*|set \$wallpaper $wl_img|" \
+                -e "s|^output \* bg .*|output * bg $wl_img fill|" \
+                "$dir/appearance.conf"
+            ok "wallpaper -> $wl_img"
+        else
+            # No usable image: neutralise the dangling bg line and use the
+            # solid_color fallback so sway still validates.
+            if grep -q '^output \* bg ' "$dir/appearance.conf"; then
+                _c sed -i \
+                    -e 's|^\(output \* bg \).*|\1# <no wallpaper found>|' \
+                    -e 's|^# output \* bg #1e1e2e solid_color|output * bg #1e1e2e solid_color|' \
+                    "$dir/appearance.conf"
             fi
-        elif ((wl_set)); then
-            _c sed -i "s|^set \$wallpaper .*|set \$wallpaper $WALLPAPER|" "$dir/appearance.conf"
-            ok "wallpaper -> $WALLPAPER"
+            stage_warn "no wallpaper image found at or near $WALLPAPER"
+            stage_warn "     sway will use a solid background instead."
         fi
     fi
     ok "applied Void sway overrides to $dir"
@@ -227,9 +251,17 @@ stage_all() {
     STAGE_ERRORS=0
     STAGE_WARNINGS=0
     stage_clone          || return 1
-    stage_apply_patch    || return 1
+    # The port patch and the sway config deployment are independent concerns.
+    # A patch failure (upstream drift) must be reported, but it must not block
+    # the sway config copy — otherwise ~/.config/sway/ stays empty and the
+    # desktop is unusable even though the port itself is the only thing broken.
+    stage_apply_patch    || true
     stage_sway_user_config || return 1
     stage_shell_config   || return 1
     stage_env            || return 1
-    ok "MagikOS staged"
+    if ((STAGE_ERRORS == 0)); then
+        ok "MagikOS staged"
+    else
+        warn "MagikOS staged with $STAGE_ERRORS error(s); see above"
+    fi
 }
