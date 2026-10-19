@@ -163,9 +163,16 @@ a host with no audio.
   Python and extracts `data.tar.xz` with GNU tar.
 - **The extracted tar members cannot be listed with `tar -tf`** because the
   `.xbps` is zstd-compressed and `zstd` is missing. Use Python's `tarfile`.
-- **Void ships no `zstd`**, so never force a compressor on `tar`. Let GNU tar
-  auto-detect with a plain `tar -xf`. Forcing `--zst` dies, forcing `--xz` dies
-  if the format ever changes.
+- **GNU tar does not link xz/zstd, it `exec`s them.** A missing decompressor
+  gives `tar (child): xz: Cannot exec`, and with tar's status ignored that
+  surfaced as the completely unrelated "payload dir not found". So `xz` and
+  `zstd` are real package dependencies, not nice-to-haves, and
+  `brave_build` now checks for the specific one the member needs and names the
+  package to install. Also never force a compressor: let GNU tar auto-detect
+  with a plain `tar -xf`, since forcing `--zst` dies without zstd and forcing
+  `--xz` dies if the format changes.
+- **`zstd` is absent even on a working Void desktop.** Do not assume any
+  decompressor is present; verify before depending on it.
 - **`sway --validate` exits 0 even when the config failed to load.** It prints
   `[ERROR] ... Error(s) loading config!` and returns success. An exit-code-only
   check reports a broken config as healthy -- this is why a config that
