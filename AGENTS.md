@@ -155,6 +155,22 @@ a host with no audio.
   Python and extracts `data.tar.xz` with GNU tar.
 - **The extracted tar members cannot be listed with `tar -tf`** because the
   `.xbps` is zstd-compressed and `zstd` is missing. Use Python's `tarfile`.
+- **Void ships no `zstd`**, so never force a compressor on `tar`. Let GNU tar
+  auto-detect with a plain `tar -xf`. Forcing `--zst` dies, forcing `--xz` dies
+  if the format ever changes.
+- **`sway --validate` exits 0 even when the config failed to load.** It prints
+  `[ERROR] ... Error(s) loading config!` and returns success. An exit-code-only
+  check reports a broken config as healthy -- this is why a config that
+  discarded every keybind went unreported. `chk_sway_validate` greps the output
+  for `Error(s) loading config!` as well as checking the exit status.
+- **Do not force `WLR_BACKENDS=headless` when validating.** `--validate` only
+  parses config, so plain `sway --validate` works even without a usable DRM
+  device; forcing a backend that this wlroots lacks fails with
+  `Unable to create backend` and no `Error on line`, i.e. no diagnosis. Plain
+  first, headless only as a fallback.
+- **`xbps-create -D` accepts any dependency string.** A Debian name ships
+  silently and only fails at `xbps-install` time. `brave_void_depends` is run
+  through `verify_package_names` before packaging.
 - **The xbps package index is stale** and `pkg_list_available` under-reports.
 
 ## GPU-less machines

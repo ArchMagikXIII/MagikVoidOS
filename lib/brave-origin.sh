@@ -142,24 +142,67 @@ brave_build() {
         _c cp "$cached_deb" "$deb"
     else
         log "Downloading $(basename "$deb")"
-        _c curl -sL -o "$deb" "$url" || { err "download failed"; return 1; }
+        # -f so an HTML error page is never saved as a "deb"; without it a 404
+        # lands in the file, passes the -s test, and fails much later with a
+        # misleading message. --progress-bar keeps a 126 MB download from
+        # looking hung without dumping a retry storm on retry.
+        if ! _c curl -fL --progress-bar --retry 3 --retry-delay 2 -o "$deb" "$url"; then
+            err "download failed: $url"
+            return 1
+        fi
         [[ -s $deb ]] || { err "downloaded deb is empty"; return 1; }
     fi
 
-    # Unpack the ar archive, then the data tarball (xz or zstd).
-    deb_extract "$deb" "$w"
+    # Start from a clean tree. The workdir persists between runs, so a previous
+    # partial extraction left a stale data.tar.* behind; `find` would then pick
+    # that up and the real error was masked by a confusing downstream failure.
+    rm -rf "$w/root" "$w/pkg" "$w"/data.tar.*
+    mkdir -p "$w" || { err "cannot create workdir $w"; return 1; }
+
+    if ! deb_extract "$deb" "$w"; then
+        err "could not unpack the .deb (not an ar archive, or truncated download)"
+        err "delete $deb and retry to force a fresh download"
+        return 1
+    fi
+
     local data
     data="$(find "$w" -maxdepth 1 -name 'data.tar.*' | head -1)"
-    [[ -n $data ]] || { err "no data.tar found"; return 1; }
+    if [[ -z $data ]]; then
+        err "no data.tar member inside the .deb"
+        err "members found: $(find "$w" -maxdepth 1 -type f -printf '%f ' 2>/dev/null)"
+        return 1
+    fi
     log "Unpacking $(basename "$data")"
-    mkdir -p "$w/root"
-    _c tar --"${data##*.}" -xf "$data" -C "$w/root"
+    mkdir -p "$w/root" || return 1
 
-    # The .deb payload lives at /opt/brave.com/brave-origin. Relocate to a
-    # Void-idiomatic /opt/brave-origin so it does not collide with any future
-    # official packaging of vanilla brave.
-    local src="$w/root/opt/brave.com/brave-origin"
-    [[ -d $src ]] || { err "payload dir not found: $src"; return 1; }
+    # Do NOT hardcode the compressor. Forcing --zst dies on Void, which ships no
+    # zstd, and forcing --xz dies if Brave ever switches to zstd. GNU tar
+    # auto-detects the format on extract, so let it sniff.
+    if ! _c tar -xf "$data" -C "$w/root"; then
+        err "tar could not extract $(basename "$data")"
+        # Name the actual reason rather than letting it surface later as a
+        # missing payload directory.
+        local tver
+        tver="$(tar --version 2>/dev/null | head -1)"
+        err "  tar: $tver"
+        case "${data##*.}" in
+            zst) err "  this member is zstd-compressed; install zstd: sudo xbps-install -S zstd" ;;
+            xz)  err "  this member is xz-compressed; install xz: sudo xbps-install -S xz" ;;
+        esac
+        return 1
+    fi
+
+    # The payload is expected at /opt/brave.com/brave-origin. Locate it rather
+    # than assuming, and if it is absent show what actually landed in the tree
+    # so the next run has something to act on.
+    local src
+    src="$(find "$w/root/opt" -maxdepth 2 -type d -name 'brave-origin' 2>/dev/null | head -1)"
+    if [[ -z $src || ! -d $src ]]; then
+        err "payload dir not found: expected $w/root/opt/brave.com/brave-origin"
+        err "  /opt entries actually present: $(find "$w/root/opt" -maxdepth 2 -mindepth 1 -type d 2>/dev/null | sed "s|$w/root/||" | tr '\n' ' ')"
+        err "  top level: $(find "$w/root" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed "s|$w/root/||" | tr '\n' ' ')"
+        return 1
+    fi
 
     local stage="$w/pkg"
     mkdir -p "$stage/opt" "$stage/usr/share" "$stage/usr/bin" \
