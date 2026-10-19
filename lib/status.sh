@@ -155,6 +155,7 @@ chk_port_applied() {
     fi
 
     # Detect Void-specific modifications to magikos-pkg-backend
+    local backend="$MAGIKOS_HOME/bin/magikos-pkg-backend"
     if grep -qE 'MAGIKOS_PKG_BACKEND.*xbps|backend_is_xbps|xbps-query|No AUR on Void|Void/xbps' "$backend" 2>/dev/null; then
         return 0
     fi
