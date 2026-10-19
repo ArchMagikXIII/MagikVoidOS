@@ -95,6 +95,10 @@ install_base_packages() {
     if [[ $DRY_RUN -eq 1 ]]; then
         _c sudo xbps-install -yS "${missing[@]}"
     else
-        sudo xbps-install -yS "${missing[@]}"
+        if ! sudo xbps-install -yS "${missing[@]}"; then
+            err "xbps-install failed for: ${missing[*]}"
+            err "check network/repo and try: sudo xbps-install -Syu"
+            return 1
+        fi
     fi
 }
