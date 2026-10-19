@@ -586,7 +586,49 @@ git -C ~/magikos-void rebase --root --exec \
 - 22 themes ship upstream (not 28 as initially assumed); confirm all are
   wanted or pick a curated default set.
 
+### New (gaming stack)
+
+- **`lspci` puts the bus-class word first**: `01:00.0 VGA compatible
+  controller: NVIDIA ...` means `grep -qiE 'nvidia.*vga'` NEVER matches a
+  real Nvidia line even though it looks right. `detect_nvidia_gpu` greps
+  nvidia first, then vga/3d/display on the survivors.
+- **A Proton tool-dir name is not derivable from the tag.** The tag is
+  `cachyos-11.0-...` and the tarball top dir is `proton-<tag>-<variant>`, so
+  constructing `proton-cachyos-$tag-...` yields a `cachyos-cachyos` path that
+  never matches what is installed, and the idempotency check re-downloads
+  400 MB every run. Read the top dir from `tar -tf | head -1 | cut -d/ -f1`
+  instead. Idempotency for an existing install: complete payload PLUS the
+  `version` file containing the tag.
+- **`--dry-run` must not validate sudo.** `ensure_sudo` behind a plan step
+  makes `--dry-run` demand a password and then report failures for actions it
+  is not going to do. Every privileged gaming step checks `DRY_RUN` first:
+  plan lines, no sudo.
+- **Module "built" status must not hang on `sudo -n dkms status`.** Without
+  cached creds that call fails and reads as "not built". The built `.ko`
+  exists at `/lib/modules/$(uname -r)/**/nvidia.ko*` and is world-readable;
+  check that first.
+- **runit, not /etc/rc.local**: grep finds no `rc.local` in `/etc/runit/1` on
+  Void, so persistent-host settings must be real `/etc/sv` services. zram is
+  `/etc/sv/zramswap` (`run` + `finish`), enabled by symlink into
+  `/var/service`.
+
 ## Session log
+
+- Gaming session (HP Pavilion 15-ec1xxx: Ryzen 5 4600H + GTX 1650 hybrid,
+  Void + the CachyOS BORE kernel): diagnosed the whole "Void feels slower
+  than Arch" report on bare metal. Root causes: the GTX 1650 bound to
+  nouveau with only `nvidia-libs-32bit` installed (no driver package, no
+  dkms, nonfree repo never enabled), and 8 GB RAM swapping straight to NVMe
+  with no zram. Machine gains: CachyOS Proton 11.0 (x86_64_v3) already in
+  Steam; NVIDIA driver + gamemode + zram became installer step 5
+  (`lib/gaming.sh`) so future installs apply them automatically. Added six
+  "Gaming (optional)" `--status` checks. Real bugs found writing it and
+  fixed in-line: the lspci word-order bug, the Proton dir-name double
+  prefix, dry-run validating sudo, and `sudo -n dkms status` reading as
+  "not built". Key facts: every package name verified `-R -S` first
+  (nvidia, nvidia-libs, dkms, gamemode set, void-repo-nonfree all OK);
+  kernel/headers pkg derived from uname -r works for flavoured and vanilla
+  kernels; runit does not source /etc/rc.local.
 
 - Ported the runtime, verified headless.
 - Converted the staged copy to a git clone at commit `50c6c926`; port kept as

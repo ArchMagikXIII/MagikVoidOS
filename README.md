@@ -49,6 +49,33 @@ all required directories are created if missing.
 
 Nothing requires root except the xbps install and `/opt`.
 
+## Gaming (auto-detected)
+
+Step 5 of the install sets up the gaming stack, each part gated on what the
+machine actually has:
+
+- **Steam + GameMode** on every full install (`--skip-gaming` to opt out).
+- **Proton-CachyOS** -> `~/.local/share/Steam/compatibilitytools.d/`
+  (user-level, no root). Picks the `x86_64_v3` build when the CPU has AVX2.
+  Pin `PROTON_CACHYOS_VERSION=<tag>` (or `latest`) to override.
+- **NVIDIA proprietary driver**, only when `lspci` reports an NVIDIA GPU:
+  enables the nonfree repo, installs `nvidia nvidia-libs nvidia-libs-32bit
+  dkms` plus the running kernel's headers in one transaction, blacklists
+  `nouveau`/`nova_core`, sets `nvidia_drm.modeset=1` for Wayland PRIME
+  offload, and stages `magikos-prime-run` into the runtime bin dir — run a
+  game (`magikos-prime-run <game>`) on the dGPU while the desktop stays on
+  the iGPU. A reboot is required to load the module. Skip with
+  `AUTO_NVIDIA=0`.
+- **zram swap**, only on machines with < 32 GiB RAM: a runit service
+  (`/etc/sv/zramswap`) that gives `/dev/zram0` half of RAM as zstd swap at
+  priority 100, above any real swap, so heavy games stop thrashing NVMe.
+  `/etc/rc.local` is NOT sourced by Void's runit boot, hence the service.
+  Skip with `AUTO_ZRAM=0`.
+
+`--dry-run` plans the whole stack without validating sudo and without writing
+anything. `--status` reports Steam / Proton / gamemode / NVIDIA module /
+nouveau-binding / zram in a "Gaming (optional)" section.
+
 ## GPU-less machines (VMs)
 
 If your machine has no usable 3D GPU, Sway will come up black: Mesa picks the

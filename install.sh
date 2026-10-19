@@ -8,6 +8,7 @@
 #   ./install.sh --status        # check the install; changes nothing
 #   ./install.sh --dry-run       # show every action, change nothing
 #   ./install.sh --skip-brave    # skip Brave Origin
+#   ./install.sh --skip-gaming   # skip the gaming stack (Proton, NVIDIA, zram)
 #   ./install.sh --no-packages   # skip Void base packages (already handled)
 #
 # Re-running is safe: each step is idempotent and skips work already done.
@@ -22,6 +23,8 @@ SHARE_DIR="$SELF_DIR/share"
 source "$SELF_DIR/lib/common.sh"
 # shellcheck source=lib/packages.sh
 source "$SELF_DIR/lib/packages.sh"
+# shellcheck source=lib/gaming.sh
+source "$SELF_DIR/lib/gaming.sh"
 # shellcheck source=lib/stage-magikos.sh
 source "$SELF_DIR/lib/stage-magikos.sh"
 # shellcheck source=lib/fonts.sh
@@ -79,14 +82,16 @@ fi
 
 DO_PACKAGES=1
 DO_BRAVE=1
+DO_GAMING=1
 DO_STATUS=0
 
-usage() { sed -n "2,16p" "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n "2,17p" "$0" | sed 's/^# \{0,1\}//'; }
 
 while (($#)); do
     case "$1" in
         --dry-run)     DRY_RUN=1; shift ;;
         --skip-brave)  DO_BRAVE=0; shift ;;
+        --skip-gaming) DO_GAMING=0; shift ;;
         --no-packages) DO_PACKAGES=0; shift ;;
         --status)      DO_STATUS=1; shift ;;
         -h|--help)     usage; exit 0 ;;
@@ -159,7 +164,7 @@ main() {
     local rc=0
 
     if ((DO_PACKAGES)); then
-        log "Step 1/4: Void base packages"
+        log "Step 1/5: Void base packages"
         if ! ensure_sudo; then
             err "sudo required for package install"
             err "re-run with --no-packages to skip this step"
@@ -171,10 +176,10 @@ main() {
             rc=1
         fi
     else
-        log "Step 1/4: base packages skipped (--no-packages)"
+        log "Step 1/5: base packages skipped (--no-packages)"
     fi
 
-    log "Step 2/4: MagikOS runtime"
+    log "Step 2/5: MagikOS runtime"
     if ! stage_all; then
         err "staging failed"
         rc=1
@@ -183,13 +188,13 @@ main() {
     # Fonts are not an xbps package: Void's nerd-fonts-ttf is a 1.5 GB
     # aggregator. Fetch only the family the bar actually draws with, and make
     # "monospace" resolve to it so the glyphs are not tofu boxes.
-    log "Step 3/4: shell fonts"
+    log "Step 3/5: shell fonts"
     if ! install_shell_fonts; then
         warn "shell font install incomplete; bar icons may render as boxes"
         warn "retry with: $SELF_DIR/install.sh --no-packages"
     fi
 
-    log "Step 4/4: Brave Origin"
+    log "Step 4/5: Brave Origin"
     if ((DO_BRAVE)); then
         if ! brave_build; then
             warn "Brave Origin build failed (MagikOS still works without it)"
@@ -197,6 +202,20 @@ main() {
         fi
     else
         ok "skipped (--skip-brave)"
+    fi
+
+    log "Step 5/5: gaming stack (auto-detected)"
+    if ((DO_GAMING)); then
+        # Steam + Proton-CachyOS + (only where an NVIDIA GPU exists) the
+        # proprietary driver + zram for small-RAM machines. Every part is
+        # idempotent, detection-gated and verified against reality; a failure
+        # warns with the fix, never claims success (rule 8).
+        if ! install_gaming_stack; then
+            err "gaming stack install had failures -- see the lines above"
+            rc=1
+        fi
+    else
+        ok "skipped (--skip-gaming)"
     fi
 
     # Neither uwsm-app nor systemd-run exists on Void, yet 26 magikos-*

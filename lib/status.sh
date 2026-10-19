@@ -270,8 +270,19 @@ chk_sway_validate() {
     # of this check reported "(no file/line detail)" and told the user nothing.
     # Headless is kept only as a fallback for a host that genuinely cannot
     # reach a seat.
+    # A console/TTY shell has no XDG_RUNTIME_DIR, and sway aborts with
+    # "XDG_RUNTIME_DIR is not set in the environment" before it parses a single
+    # line -- so running ./install.sh --status from outside a graphical session
+    # reported a perfectly good config as broken. Give sway a private runtime
+    # dir in that case: --validate only parses, nothing else needs it.
+    local xdg_tmp="" xdg_prefix=()
+    if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+        xdg_tmp="$(mktemp -d)" && chmod 0700 "$xdg_tmp"
+        [[ -n $xdg_tmp ]] && xdg_prefix=(env "XDG_RUNTIME_DIR=$xdg_tmp")
+    fi
+
     local out rc how bad=0
-    out="$(timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc=$?
+    out="$("${xdg_prefix[@]}" timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc=$?
     how="plain"
     # sway 1.12 exits 0 even when the config failed to load, printing only
     # "Error(s) loading config!". A pure exit-code check therefore reports a
@@ -281,8 +292,8 @@ chk_sway_validate() {
     printf '%s' "$out" | grep -q 'Error(s) loading config!' && bad=1
     if ((rc != 0 || bad)); then
         local out2 rc2 bad2=0
-        out2="$(WLR_BACKENDS=headless WLR_RENDERER=pixman \
-               timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc2=$?
+        out2="$(env WLR_BACKENDS=headless WLR_RENDERER=pixman \
+               "${xdg_prefix[@]}" timeout 30 sway --validate -c "$MAGIKOS_USER_SWAY/config" 2>&1)"; rc2=$?
         printf '%s' "$out2" | grep -q 'Error(s) loading config!' && bad2=1
         # Keep whichever attempt got further: the plain run reports real config
         # errors, the headless run only rescues backend initialisation.
@@ -291,6 +302,7 @@ chk_sway_validate() {
             out="$out2"; rc=$rc2; bad=$bad2; how="headless"
         fi
     fi
+    [[ -n $xdg_tmp ]] && rm -rf "$xdg_tmp"
     if ((rc == 0 && bad == 0)); then return 0; fi
 
     # Always surface the raw output. A config error carries the offending file
@@ -364,7 +376,20 @@ chk_qt_webp() {
 }
 
 chk_wallpaper() {
-    [[ -f $WALLPAPER ]]; CHECK_HINT="no wallpaper at $WALLPAPER (Sway starts black)"$'\n'"fix: put any .jpg there, or set WALLPAPER=/path/to/image"; return $?
+    # The installer rewrites appearance.conf to point at whatever image is
+    # available in the wallpapers directory, so a pass means either the
+    # configured $WALLPAPER exists or some image was found there.
+    if [[ -f $WALLPAPER ]]; then
+        return 0
+    fi
+    local d img
+    d="$(dirname "$WALLPAPER")"
+    img="$(find "$d" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | sort | head -n1)"
+    if [[ -n $img && -f $img ]]; then
+        return 0
+    fi
+    CHECK_HINT="no wallpaper at $WALLPAPER (Sway starts black)"$'\n'"fix: put any .jpg there, or set WALLPAPER=/path/to/image"
+    return 1
 }
 
 # Void has neither uwsm-app nor systemd-run, but 26 magikos-* scripts launch
@@ -385,14 +410,24 @@ chk_launch_shims() {
         return 1
     fi
     # A shim that exists but is shadowed further down PATH does the same thing
-    # as no shim at all, so confirm PATH actually resolves to ours.
+    # as no shim at all. But PATH here is the *installer shell's* PATH, and
+    # it may legitimately lack $MAGIKOS_HOME/bin (the sudo re-exec path
+    # deliberately resets PATH; a console shell never sourced .profile) --
+    # `command -v` then finds nothing and a perfectly working shim reads as
+    # "shadowed -> <nothing>". Inside the session, environment.conf prepends
+    # $MAGIKOS_HOME/bin to PATH, and that is what makes the shims win. So
+    # verify the invariant that matters: the session PATH puts the shim dir
+    # first, and under that PATH every shim resolves to ours.
+    local envconf="$MAGIKOS_USER_SWAY/environment.conf"
+    if ! grep -Eq '^[[:space:]]*set \$PATH (\$MAGIKOS_PATH|\$HOME/\.local/share/magikos)/bin:' "$envconf" 2>/dev/null; then
+        CHECK_HINT="environment.conf no longer puts the MagikOS bin dir first on PATH"$'\n'"the shims exist but the session would not resolve to them"$'\n'"fix with: ./install.sh --no-packages   # re-applies the sway overrides"
+        return 1
+    fi
     for s in uwsm-app systemd-run systemctl; do
         want="$MAGIKOS_HOME/bin/$s"
-        if [[ -x "$MAGIKOS_HOME/bin/$s" ]]; then
-            local got
-            got="$(command -v "$s" 2>/dev/null)"
-            [[ $got == "$want" ]] || mispathed+=("$s -> ${got:-<nothing>}")
-        fi
+        local got
+        got="$(PATH="$MAGIKOS_HOME/bin:$PATH" command -v "$s" 2>/dev/null)"
+        [[ $got == "$want" ]] || mispathed+=("$s -> ${got:-<nothing>}")
     done
     if ((${#mispathed[@]})); then
         CHECK_HINT="shadowed on PATH: ${mispathed[*]}"$'\n'"another copy earlier in PATH wins, so the shim never runs"$'\n'"fix with: ./install.sh --no-packages"
@@ -597,6 +632,113 @@ chk_sway_session() {
     return 0
 }
 
+# --- gaming checks -----------------------------------------------------------
+
+chk_gaming_steam() {
+    pkg_installed steam
+    local rc=$?
+    CHECK_HINT="steam is not installed"$'\n'"fix with: sudo xbps-install -S steam"
+    return $rc
+}
+
+chk_gamemode() {
+    have gamemoderun || {
+        CHECK_HINT="no gamemoderun binary"$'\n'"fix with: sudo xbps-install -S gamemode"
+        return 1
+    }
+    pkg_installed libgamemode || {
+        CHECK_HINT="gamemode binary present but libgamemode package missing"$'\n'"fix with: sudo xbps-install -S gamemode libgamemode"
+        return 1
+    }
+    return 0
+}
+
+# Proton-CachyOS is complete only when the tool dir has the launcher, the
+# Steam compatibility manifest and a version stamp. A partial extract would
+# still make Steam list a tool that fails at launch, so require all three.
+chk_proton_cachyos() {
+    local d
+    for d in "$STEAM_COMPATTOOLS_DIR"/proton-cachyos-*; do
+        [[ -d $d ]] || continue
+        if [[ -f $d/proton && -f $d/compatibilitytool.vdf && -s $d/version ]]; then
+            note "$(basename "$d")"
+            return 0
+        fi
+    done
+    CHECK_HINT="no complete proton-cachyos-* under $STEAM_COMPATTOOLS_DIR"$'\n'"without it Steam uses its own Proton, which is noticeably slower than the CachyOS build"$'\n'"fix with: ./install.sh --no-packages   # the gaming step fills this in idempotently"
+    return 1
+}
+
+# Two states count as 'present': the module is loaded (post-reboot), or dkms
+# has it built and only a reboot remains. Both report honestly; anything else
+# fails with the exact fix.
+chk_nvidia_module() {
+    if ! detect_nvidia_gpu; then
+        echo "skip no NVIDIA GPU here"
+        return 0
+    fi
+    if [[ -d /sys/module/nvidia ]]; then
+        note "nvidia module loaded"
+        return 0
+    fi
+    # A built module shows up as a .ko for this exact kernel, which is
+    # readable without root -- sudo -n dkms status fails whenever creds are
+    # not cached, and that must not read as "not built".
+    if find "/lib/modules/$(uname -r)" -name 'nvidia.ko*' 2>/dev/null | grep -q .; then
+        note "module built for $(uname -r), reboot to load it"
+        return 0
+    fi
+    if have dkms && sudo -n dkms status 2>/dev/null | grep -q '^nvidia/.*installed'; then
+        note "module built, reboot to load it"
+        return 0
+    fi
+    if pkg_installed nvidia; then
+        CHECK_HINT="nvidia package installed but the kernel module is not built or not loaded"$'\n'"most common cause: kernel headers missing for $(uname -r)"$'\n'"fix with: sudo xbps-reconfigure -f <your-linux-package> ; reboot"
+        return 1
+    fi
+    CHECK_HINT="no nvidia package installed; $(command -v lspci >/dev/null && echo 'an NVIDIA GPU is present')"$'\n'"the desktop and all games run on 'nouveau', which cannot drive games at speed"$'\n'"fix with: ./install.sh --no-packages   # installs nvidia + nvidia-libs + dkms, blacklists nouveau"
+    return 1
+}
+
+# nouveau binding the GPU is the single thing that makes a hybrid laptop feel
+# dramatically slower than the same hardware on Arch/CachyOS: games silently
+# run (or fail) on the iGPU. Catch it by what the kernel actually says.
+chk_nvidia_not_nouveau() {
+    if ! detect_nvidia_gpu; then
+        echo "skip no NVIDIA GPU here"
+        return 0
+    fi
+    local driver
+    driver="$(lspci -k 2>/dev/null | grep -A4 -i 'NVIDIA.*\(VGA\|3D\|Display\)' |
+              grep 'Kernel driver in use' | awk '{print $NF}' | head -1)"
+    if [[ -z $driver ]]; then
+        # Module not loaded at all: chk_nvidia_module already covers that case.
+        echo "skip no NVIDIA kernel driver bound"
+        return 0
+    fi
+    if [[ $driver == nvidia ]]; then
+        note "NVIDIA GPU driven by nvidia"
+        return 0
+    fi
+    CHECK_HINT="NVIDIA GPU is driven by '$driver', not nvidia"$'\n'"nouveau/nova-core cannot accelerate games; everything lands on the slow iGPU"$'\n'"fix with: ./install.sh --no-packages   # blacklists it and installs the proprietary module"$'\n'"then reboot"
+    return 1
+}
+
+chk_zram() {
+    if swapon --show=NAME --noheadings 2>/dev/null | grep -qw /dev/zram0; then
+        note "$(swapon --show=NAME --noheadings 2>/dev/null | grep /dev/zram0 | head -1)"
+        return 0
+    fi
+    local total_kb
+    total_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)"
+    if ((total_kb >= 32 * 1024 * 1024)); then
+        echo "skip plenty of RAM; zram intentionally skipped"
+        return 0
+    fi
+    CHECK_HINT="no zram swap on a ${total_kb} kB-RAM machine: heavy games thrash NVMe swap"$'\n'"fix with: ./install.sh --no-packages   # installs the zramswap runit service"
+    return 1
+}
+
 # --- report -----------------------------------------------------------------
 
 status_report() {
@@ -635,6 +777,19 @@ check "launch shims (uwsm/systemd-run/systemctl)" chk_launch_shims
     check "MAGIKOS_PATH in ~/.profile"   chk_env
     check "Quickshell log clean"         chk_shell_log
     check "sway session running"         chk_sway_session
+
+    printf '\n\033[1m  Gaming (optional)\033[0m\n'
+    # Show the gaming section when gaming was requested, or when it looks
+    # installed -- the same rule as the Brave section: an optional component
+    # never reads as a failure merely by being absent.
+    if ((DO_GAMING)) || pkg_installed steam || have gamemoderun; then
+        check "steam installed"            chk_gaming_steam
+        check "proton-cachyos complete"    chk_proton_cachyos
+        check "gamemode present"           chk_gamemode
+        check "nvidia driver (module)"     chk_nvidia_module
+        check "nvidia nouveau not bound"   chk_nvidia_not_nouveau
+        check "zram swap active"           chk_zram
+    fi
 
     printf '\n\033[1m  Brave Origin (optional)\033[0m\n'
     if ((BRAVE_OPTIONAL)); then
