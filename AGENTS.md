@@ -138,8 +138,11 @@ magikos-toggle-bar
 grep ERROR ~/.local/state/magikos/quickshell.log
 ```
 
-A clean shell log has **no ERROR lines**. One `pipewire` ERROR is expected on
-a host with no audio.
+A clean shell log has **no ERROR lines**. A `pipewire` ERROR is no longer
+"expected no-audio noise" here: since the session-audio block this host has
+working audio, so a pipewire ERROR means the daemons failed to start or
+connect and is a real failure (the `chk_shell_log` exemption was removed
+accordingly; `MESA` errors still belong to the graphics check).
 
 ## Gotchas discovered the hard way
 
@@ -625,7 +628,36 @@ git -C ~/magikos-void rebase --root --exec \
   than trusting the counts). If such a rewrite is ever needed again, do it
   BEFORE the branch is published, or accept a force-with-lease push.
 
+- **Regenerating `share/void-port.patch` needs `git diff --binary --full-index`,
+  and untracked runtime files need `git add -N` first.** Plain `git diff`
+  writes binary hunks (theme webp/png assets) with *abbreviated* index hashes,
+  which `git apply` rejects with "cannot apply binary patch ... without full
+  index line" -- and a patch that fails to apply silently leaves a staged tree
+  half-ported. Untracked files (e.g. an added theme background) are never part
+  of `git diff` at all; `git add -N <path>` marks them intent-to-add so the
+  diff carries their real content. After every regeneration, verify by
+  capturing the apply's exit code in a fresh `git worktree` and diffing the
+  result against the runtime -- never echo a verdict unconditionally, which
+  once printed "PATCH OK" after the apply had actually failed.
+- **`sh -c 'pgrep ... || daemon'` can be exec-replaced by the spawn
+  machinery**: the daemon's argv0 becomes the resolved absolute path with
+  PPID 1 (we watched exactly that for a duplicated wireplumber at boot). a
+  `pgrep -x <name>` guard misses it; the bracket pattern (`pgrep -f
+  'wireplumbe[r]'`) catches both spellings without matching the `sh -c`
+  cmdline that contains the pattern itself.
+
 ## Session log
+
+- Audio outage, day 2: after the reboot, sound died again while `wpctl` *hung*.
+  Two user-owned wireplumbers were alive since boot, one orphaned at PPID 1
+  with a `/usr/bin/wireplumber` argv0; the thing could not be traced to any
+  magikos script, the shim (its `--user` verbs are pure no-ops), the shell
+  tree, fish config, or LightDM session hooks. Fixes chosen make the system
+  robust to whatever spawner it was: the autostart guard now uses the bracket
+  pgrep pattern that catches both argv0 spellings, and a `Hidden=true`
+  override at `~/.config/autostart/pipewire.desktop` locks out XDG autostart
+  as a second audio source. Sound restored live (single trio, sink back at
+  the saved volume) and the whole story is baked into `apply_sway_overrides`.
 
 - Gaming session (HP Pavilion 15-ec1xxx: Ryzen 5 4600H + GTX 1650 hybrid,
   Void + the CachyOS BORE kernel): diagnosed the whole "Void feels slower

@@ -607,19 +607,20 @@ chk_shell_log() {
     [[ $errs =~ ^[0-9]+$ ]] || errs=0
     if ((errs == 0)); then rm -f "$cur"; return 0; fi
 
-    # A pipewire error is expected on a host with no audio sink, and is not a
-    # Quickshell configuration problem. MESA/GL errors belong to the graphics
-    # check, not here.
-    local nonpipe
-    nonpipe="$(grep -a 'ERROR' "$cur" 2>/dev/null | grep -avcE 'pipewire|MESA')" || nonpipe=0
-    [[ $nonpipe =~ ^[0-9]+$ ]] || nonpipe=0
-    if ((nonpipe > 0)); then
-        CHECK_HINT="$nonpipe real ERROR line(s) since the current shell start"$'\n'"$(grep -a ERROR "$cur" | grep -avE 'pipewire|MESA' | head -3 | sed 's/^/          /')"
+    # A pipewire error USED to be expected on this host because audio never
+    # ran, and was exempted from this check. Since the session-audio block
+    # (apply_sway_overrides) there IS audio on the reference host, so a
+    # pipewire ERROR now means the daemons failed to start or connect and
+    # counts as real. MESA/GL errors belong to the graphics check, not here.
+    local real_errs
+    real_errs="$(grep -a 'ERROR' "$cur" 2>/dev/null | grep -avcE 'MESA')" || real_errs=0
+    [[ $real_errs =~ ^[0-9]+$ ]] || real_errs=0
+    if ((real_errs > 0)); then
+        CHECK_HINT="$real_errs real ERROR line(s) since the current shell start"$'\n'"$(grep -a ERROR "$cur" | grep -avE 'MESA' | head -3 | sed 's/^/          /')"
         rm -f "$cur"
         return 1
     fi
     rm -f "$cur"
-    _c_warn "only the expected no-audio pipewire error in $f"
     return 0
 }
 

@@ -155,12 +155,14 @@ EOF
     #
     #     pipewire + pipewire-pulse run exec-always WITHOUT a guard: a second
     #     instance refuses to bind the sockets and exits, so reloads cannot
-    #     stack them. wireplumber runs guarded: pgrep -x matches the exact
-    #     process name and not the sh -c cmdline that contains the word, and
-    #     two wireplumbers fight until the default sink disappears. The block
-    #     is rebuilt wholesale on every run (awk keeps everything before the
-    #     marker, then the fresh block is appended), so an older version of
-    #     the block is upgraded for free instead of accumulated.
+    #     stack them. wireplumber runs guarded: two wireplumbers fight until
+    #     the default sink disappears, and a boot duplicated one anyway from a
+    #     spawner whose argv0 was the resolved absolute path with no parent.
+    #     pgrep -x misses that form; pgrep -f would match this very sh -c; the
+    #     bracket pattern 'wireplumbe[r]' is the only form that catches both
+    #     without self-matching. The block is rebuilt wholesale on every run
+    #     (awk keeps everything before the marker, then the fresh block is
+    #     appended), so an older version is upgraded for free.
     if [[ -f $dir/autostart.conf ]]; then
         if [[ $DRY_RUN -eq 1 ]]; then
             printf '  \033[2mplan\033[0m  add pipewire/wireplumber exec lines to %s\n' \
@@ -177,8 +179,30 @@ EOF
 # silent (wpctl: "Could not connect to PipeWire").
 exec_always pipewire
 exec_always pipewire-pulse
-exec_always sh -c "pgrep -x wireplumber >/dev/null || wireplumber >/dev/null 2>&1"
+exec_always sh -c "pgrep -f 'wireplumbe[r]' >/dev/null || wireplumber >/dev/null 2>&1"
 EOF
+            # Lock out XDG autostart as a second audio-daemon source in one
+            # file that does not cost anything: /etc/xdg/autostart/pipewire.desktop
+            # ships Exec=pipewire, and any future consumer of XDG autostart
+            # (portal, dex, a session wrapper) would race the sway block with
+            # its own copy. XDG autostart suppression is a Hidden=true copy
+            # under $XDG_CONFIG_HOME/autostart; pipewire/pipewire-pulse
+            # double-spawns waste only a fork (instance two refuses to bind),
+            # but the honest defence is to not spawn at all.
+            local _autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+            if [[ ! -e $_autostart_dir/pipewire.desktop ]]; then
+                mkdir -p "$_autostart_dir" &&
+                cat > "$_autostart_dir/pipewire.desktop" <<'PKGOF'
+[Desktop Entry]
+Type=Application
+Name=PipeWire
+Comment=disabled: session audio belongs to the sway autostart block
+Hidden=true
+Exec=pipewire
+PKGOF
+                printf '    applied XDG-autostart override for pipewire.desktop in %s\n' \
+                    "$_autostart_dir"
+            fi
         fi
     fi
 
