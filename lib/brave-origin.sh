@@ -123,10 +123,23 @@ brave_build() {
     rm -rf "$w"; mkdir -p "$w"
     local deb="$w/brave-origin_${BRAVE_VERSION}_amd64.deb"
     local url="$BRAVE_REPO_URL/v${BRAVE_VERSION}/brave-origin_${BRAVE_VERSION}_amd64.deb"
+    local cached_deb=""
 
-    log "Downloading $(basename "$deb")"
-    _c curl -sL -o "$deb" "$url" || { err "download failed"; return 1; }
-    [[ -s $deb ]] || { err "downloaded deb is empty"; return 1; }
+    # Check for cached deb in repo share
+    if [[ -n "${SHARE_DIR:-}" && -f "${SHARE_DIR}/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb" ]]; then
+        cached_deb="${SHARE_DIR}/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb"
+    elif [[ -f "/home/magikxiii/Projects/magikos-void/share/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb" ]]; then
+        cached_deb="/home/magikxiii/Projects/magikos-void/share/brave-cache/brave-origin_${BRAVE_VERSION}_amd64.deb"
+    fi
+
+    if [[ -n "$cached_deb" && -s "$cached_deb" ]]; then
+        log "Using cached Brave .deb: $(basename "$cached_deb")"
+        _c cp "$cached_deb" "$deb"
+    else
+        log "Downloading $(basename "$deb")"
+        _c curl -sL -o "$deb" "$url" || { err "download failed"; return 1; }
+        [[ -s $deb ]] || { err "downloaded deb is empty"; return 1; }
+    fi
 
     # Unpack the ar archive, then the data tarball (xz or zstd).
     deb_extract "$deb" "$w"
