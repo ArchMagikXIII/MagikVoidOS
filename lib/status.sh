@@ -295,11 +295,17 @@ chk_brave_cmd() {
 }
 
 chk_brave_desktop() {
-    [[ -f /usr/share/applications/brave-origin.desktop ]]; local rc=$?; CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
+    if [[ -f /usr/share/applications/brave-origin.desktop ]] || [[ -f /home/$USER/.local/share/applications/brave-origin.desktop ]]; then
+        return 0
+    fi
+    CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
 }
 
 chk_brave_icon() {
-    [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; local rc=$?; CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
+    if [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]] || [[ -f /home/$USER/.local/share/icons/hicolor/256x256/apps/brave-origin.png ]]; then
+        return 0
+    fi
+    CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return 1
 }
 
 # Only meaningful while a Sway session is running.
