@@ -618,6 +618,13 @@ git -C ~/magikos-void rebase --root --exec \
   `/etc/sv/zramswap` (`run` + `finish`), enabled by symlink into
   `/var/service`.
 
+- **`git rebase --root --exec 'amend --reset-author'` rewrites every hash**,
+  including diverging from origin/master silently: the same work becomes
+  different hashes and the local branch reads 'ahead 30, behind 24' with no
+  missing content (verify with `git diff origin/master master --stat` rather
+  than trusting the counts). If such a rewrite is ever needed again, do it
+  BEFORE the branch is published, or accept a force-with-lease push.
+
 ## Session log
 
 - Gaming session (HP Pavilion 15-ec1xxx: Ryzen 5 4600H + GTX 1650 hybrid,
