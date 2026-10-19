@@ -221,6 +221,21 @@ accordingly; `MESA` errors still belong to the graphics check).
   host a timeout left the session with no shell at all while reporting a tidy
   failure. It now waits on a deadline (`MAGIKOS_SHELL_READY_TIMEOUT`, default
   60s).
+- **A config-loss report that says "after a restart" may not be about the
+  restart.** The user had to re-fix `~/.config/sway/bindings.conf` after every
+  reboot; the reboot was innocent. `install.sh` had run right before it, and
+  `stage_sway_user_config` copied all eight templates over the user config
+  wholesale (every file in `~/.config/sway` shared one install-second
+  timestamp; the user's edit was the newest line). Fixed structurally:
+  staging now records a post-override sha256 of each staged file in
+  `$MAGIKOS_USER_SWAY/.stage-manifest`; on re-run, files whose current hash
+  does not match the record (including files with no record -- pre-existing
+  user config from before this change) are skipped, never adopted, and a
+  warn names the `diff` when the template has also moved. Template updates
+  still propagate to untouched files, and `apply_sway_overrides` still runs
+  on both copies (rule 2). Upstream `magikos-refresh-sway` remains a
+  documented wholesale overwrite and still will clobber a hand-edit if
+  invoked; that would need a port-patch change to soften.
 - **Void's installer leaves a getty on the tty LightDM wants.** runsv restarts it
   the moment it is exited, so the user types `exit` two or three times before
   the greeter appears, which reads as "the desktop started late, with errors

@@ -247,19 +247,86 @@ PKGOF
     ok "applied Void sway overrides to $dir"
 }
 
+# sha256 of a file, empty when the file cannot be read (missing/unreadable).
+# Taken via command substitution, so this must print ONLY the hash.
+stage_file_hash() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+
 stage_sway_user_config() {
     log "Deploying Sway config -> $MAGIKOS_USER_SWAY"
     ensure_dir "$MAGIKOS_USER_SWAY" "sway config dir" || return 1
-    local f copied=0
+    have sha256sum || { stage_err "sha256sum (coreutils) missing; cannot track staged files"; return 1; }
+    local manifest="$MAGIKOS_USER_SWAY/.stage-manifest"
+
+    # What a previous stage left behind, keyed by target filename. Entries are
+    # recorded AFTER apply_sway_overrides has had its pass below; the
+    # overrides are idempotent, so on the next run the freshly overridden copy
+    # hashes exactly like the record. "Record still matches" therefore means
+    # nobody but this installer has touched the file -- anything else, a
+    # missing entry included, is user property and must not be overwritten.
+    # Without this distinction a re-run rewrote ~/.config/sway wholesale,
+    # which is how local edits kept dying on every install (and, since such
+    # reinstalls tended to happen right before a reboot, got blamed on the
+    # restart).
+    local -A staged=()
+    local -A skipped_keys=()
+    local -a tracked=()
+    local h f
+    if [[ -f $manifest ]]; then
+        while read -r h f; do
+            [[ -n $h && -n $f ]] || continue
+            staged[$f]=$h
+            tracked+=("$f")
+        done <"$manifest"
+    fi
+
+    local src dst key shash dcur copied=0 current=0 skipped=0
     # NOTE: the main entry point is `config`, not `config.conf`.
     for f in config appearance autostart bindings environment input output windows; do
-        if [[ -f $MAGIKOS_HOME/config/sway/$f ]]; then
-            _c cp "$MAGIKOS_HOME/config/sway/$f" "$MAGIKOS_USER_SWAY/"; ((copied++))
-        elif [[ -f $MAGIKOS_HOME/config/sway/$f.conf ]]; then
-            _c cp "$MAGIKOS_HOME/config/sway/$f.conf" "$MAGIKOS_USER_SWAY/"; ((copied++))
+        src="$MAGIKOS_HOME/config/sway/$f"
+        if [[ ! -f $src ]]; then
+            src="$MAGIKOS_HOME/config/sway/$f.conf"
+        fi
+        if [[ ! -f $src ]]; then
+            continue
+        fi
+        # Keep the source basename: templates may be `bindings.conf`, and the
+        # user file must stay `bindings.conf`, not lose its extension.
+        key="$(basename "$src")"
+        dst="$MAGIKOS_USER_SWAY/$key"
+        shash="$(stage_file_hash "$src")"
+        dcur="$(stage_file_hash "$dst")"
+        if [[ $dcur == "$shash" ]]; then
+            # Already at template content; do not even touch the mtime.
+            ((current++))
+            # Content equal to the template is safe to adopt as installed
+            # output: from now on, an edit to it is detected as user work.
+            if [[ -z ${staged[$key]:-} ]]; then
+                tracked+=("$key")
+                staged[$key]="pending"
+            fi
+            continue
+        fi
+        if [[ -n $dcur && ${staged[$key]:-} != $dcur ]]; then
+            # Locally edited, or staged by an older installer and re-edited
+            # since. It belongs to the user now; copy nothing, and do NOT
+            # adopt its content into the record below, or the next run would
+            # read the user's edit as installer output and overwrite it.
+            skipped_keys[$key]=1
+            if [[ $shash != $dcur ]]; then
+                stage_warn "left $key alone: edited locally since the last stage"
+                stage_warn "     and the template differs; compare with:"
+                stage_warn "     diff $src $dst"
+            fi
+            ((skipped++))
+            continue
+        fi
+        _c cp "$src" "$dst" || { stage_err "copying $src -> $dst failed"; continue; }
+        ((copied++))
+        if [[ -z ${staged[$key]:-} ]]; then
+            tracked+=("$key")
         fi
     done
-    ok "staged $copied sway file(s)"
+    ok "sway config staged: $copied copied, $current already current, $skipped left untouched"
     if ((DRY_RUN)); then
         printf '  \033[2mplan\033[0m  verify %s/config exists after the copy\n' "$MAGIKOS_USER_SWAY"
     elif [[ ! -f $MAGIKOS_USER_SWAY/config ]]; then
@@ -267,10 +334,40 @@ stage_sway_user_config() {
         stage_err "     expected it at $MAGIKOS_HOME/config/sway/config"
         return 1
     fi
-    # Patch the *staged* source too, then re-derive the user copy from it so
-    # both stay identical and `magikos-refresh-sway` becomes a no-op-safe op.
+    # Overrides still run on BOTH copies (rule 2): they carry port invariants
+    # -- MAGIKOS_PATH, session audio, wallpaper resolution -- not user
+    # preference, so a locally-edited file must still receive them. Only the
+    # copy step above yields to a local edit. Upstream `magikos-refresh-sway`
+    # does not yield at all (it is a documented wholesale overwrite), so it
+    # remains a way to lose local edits by hand.
     apply_sway_overrides "$MAGIKOS_HOME/config/sway"
     apply_sway_overrides "$MAGIKOS_USER_SWAY"
+
+    # Record post-override hashes for installer-owned files, so a later run
+    # can tell its own output from user work. Everything skipped this run
+    # keeps its previous record (or none): re-hashing here would have
+    # committed the user's edit as "installer output" and invited the very
+    # overwrite this staging exists to prevent.
+    if ((DRY_RUN)); then
+        printf '  \033[2mplan\033[0m  rewrite %s\n' "$manifest"
+        return 0
+    fi
+    for f in "${tracked[@]}"; do
+        if [[ -n ${skipped_keys[$f]:-} ]]; then
+            continue
+        fi
+        h="$(stage_file_hash "$MAGIKOS_USER_SWAY/$f")"
+        if [[ -n $h ]]; then
+            staged[$f]=$h
+        fi
+    done
+    {
+        for f in "${!staged[@]}"; do
+            if [[ -n ${staged[$f]} && ${staged[$f]} != pending ]]; then
+                printf '%s %s\n' "${staged[$f]}" "$f"
+            fi
+        done
+    } | sort -k2 >"$manifest" || stage_warn "could not write $manifest"
 }
 
 stage_shell_config() {
