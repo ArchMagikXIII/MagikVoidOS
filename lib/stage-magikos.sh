@@ -98,7 +98,10 @@ apply_sway_overrides() {
 
     # 3. autotiling ships nowhere upstream (single dangling exec in autostart.conf).
     if [[ -f $dir/autostart.conf ]]; then
-        _c sed -i 's|^\(.*\)autotiling\(.*\)$|# void-port: autotiling daemon not shipped upstream: \1autotiling\2|' \
+        # Mark uncommented autotiling execs only. Matching the marker itself
+        # would double the prefix on every re-run, since this is idempotent and
+        # runs against both the user copy and the staged source.
+        _c sed -i 's|^\([ \t]*exec[ \t].*autotiling.*\)$|# void-port: autotiling daemon not shipped upstream: \1|' \
             "$dir/autostart.conf"
     fi
 
