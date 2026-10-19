@@ -486,13 +486,17 @@ Auth to GitHub uses an ed25519 key, **not** a token.
 private key  ~/.ssh/id_ed25519_github    (mode 600)
 public key   ~/.ssh/id_ed25519_github.pub (mode 644)
 config      ~/.ssh/config -> Host github.com pins this key, IdentitiesOnly yes
-fingerprint SHA256:75kfCNfYoCi4CP+30hpLxq7wNOUdKJMzwT31q4VLc+Y
+fingerprint SHA256:CYcE0RF1hYfq8S0w5hAabX4og4kcirKqnMjJsaBRvkE
 comment     magikxiii@void-magikos-void
 ```
 
-The public key starts `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiGOJdht7...` and is
-registered on the `ArchMagikXIII` account. Verified with
-`ssh -T git@github.com` -> `Hi ArchMagikXIII!`.
+The public key starts `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiGOJdht9...` and is
+registered as the repo's **deploy key** on `ArchMagikXIII/MagikVoidOS` (write
+access enabled). Verified with `ssh -T git@github.com` -> `Hi ArchMagikXIII!`.
+
+The key was generated on the bare-metal HP host (Oct 18 2026), after the
+original deploy key was lost with the previous machine. Verify yours with
+`ssh-keygen -lf ~/.ssh/id_ed25519_github.pub` if auth ever breaks.
 
 The key was generated on the bare-metal host, so the fingerprint above is
 **not** the one older notes in this file recorded. A fingerprint mismatch here
@@ -500,6 +504,8 @@ means the running key is not the key GitHub knows: check
 `ssh-keygen -lf ~/.ssh/id_ed25519_github.pub` before concluding auth is broken.
 The key carries no passphrase; add one with `ssh-keygen -p -f
 ~/.ssh/id_ed25519_github` if unattended pushes should stop working unattended.
+The key was generated on the bare-metal HP host (Oct 18 2026), after the
+original deploy key was lost with the previous machine.
 
 Rules:
 
