@@ -181,3 +181,72 @@ ensure_default_theme() {
         return 1
     fi
 }
+
+# Void's installer enables a getty on every console tty, including the one
+# LightDM wants. Both then contend for tty1: runsv restarts the getty the
+# instant it is exited, so the user types `exit` two or three times before
+# LightDM finally wins the VT. It presents as "the desktop started late, with
+# errors before it", which is a miserable thing to debug from the inside.
+#
+# Disable the getty that actually collides (DM_TTY, default tty1). tty2..tty6
+# are separate virtual terminals and do not interfere, so they are left alone
+# unless the caller asks.
+#
+# Never restarts LightDM: that would terminate the running sway session. The
+# getty change lands at once; the lightdm.conf edits need the next login.
+reconcile_desktop_gettys() {
+    local dm_tty="${DM_TTY:-tty1}"
+    local getty_link="/var/service/agetty-$dm_tty"
+    local lightdm_conf=/etc/lightdm/lightdm.conf
+    local changed=0
+
+    # Everything here writes outside $HOME. In --dry-run we still report what
+    # would change, but must not touch anything (rule 7).
+    if ! [[ -L $getty_link ]] && ! grep -qsE '^[[:space:]]*autologin-user=' "$lightdm_conf" 2>/dev/null; then
+        ok "no getty/LightDM conflict to reconcile"
+        return 0
+    fi
+
+    if [[ -L $getty_link ]]; then
+        if ((DRY_RUN)); then
+            printf '  \033[2mplan\033[0m  would disable %s (LightDM needs tty%s)\n' "$getty_link" "${dm_tty#tty}"
+        elif rm "$getty_link"; then
+            ok "disabled agetty-$dm_tty (it was contending with LightDM for tty${dm_tty#tty})"
+        else
+            warn "could not remove $getty_link; the login prompt will still shadow LightDM"
+            warn "fix with: rm $getty_link"
+        fi
+        changed=1
+    fi
+
+    # Void's live-image defaults name a user that does not exist on an installed
+    # system and autologin into xfce, which is not the session here. LightDM
+    # logs an error on every boot and drops to the greeter. Comment the dead
+    # keys out with the reason inline rather than deleting them, so the file
+    # stays legible and the change is reversible without the backup.
+    if grep -qsE '^[[:space:]]*autologin-user=' "$lightdm_conf" 2>/dev/null; then
+        if ((DRY_RUN)); then
+            printf '  \033[2mplan\033[0m  would clean the dead autologin keys out of %s\n' "$lightdm_conf"
+        else
+            local backup="$lightdm_conf.bak.$(date +%Y%m%d%H%M%S)"
+            if ! cp -a "$lightdm_conf" "$backup"; then
+                warn "could not back up $lightdm_conf; leaving it untouched"
+                return 1
+            fi
+            sed -i \
+                -e 's|^\([[:space:]]*\)autologin-user=.*|\1# autologin disabled by install.sh: no autologin user on this host|' \
+                -e 's|^\([[:space:]]*\)autologin-user-timeout=.*|\1# autologin disabled by install.sh|' \
+                -e 's|^\([[:space:]]*\)autologin-session=.*|\1# autologin disabled by install.sh: this host runs sway, not xfce|' \
+                -e 's|^\([[:space:]]*\)user-session=.*|\1user-session=sway|' \
+                "$lightdm_conf"
+            ok "cleaned the live-image autologin keys out of $lightdm_conf"
+            ok "backup: $backup"
+        fi
+        changed=1
+    fi
+
+    if ((changed)) && ! ((DRY_RUN)); then
+        printf '  \033[2mthe getty is gone now; the LightDM edits apply at next login\033[0m\n'
+    fi
+    return 0
+}

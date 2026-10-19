@@ -213,6 +213,27 @@ main() {
     # rather than a missing one. Set one unless the user already chose.
     ensure_default_theme
 
+    # Void's installer leaves a getty enabled on the tty LightDM wants, so the
+    # user types `exit` two or three times before the greeter appears. Needs
+    # root; with --no-packages sudo may never have been validated, so treat a
+    # permission failure as a warning with the exact command rather than a hard
+    # install failure -- the desktop works, it just boots noisily.
+    if [[ -e /var/service/agetty-tty1 ]] || grep -qsE '^[[:space:]]*autologin-user=' /etc/lightdm/lightdm.conf 2>/dev/null; then
+        log "Host: LightDM vs console getty"
+        # In --dry-run reconcile_desktop_gettys only prints the plan, so call it
+        # rather than bailing out on the root check -- "needs root" would be a
+        # misleading thing to report for a run that writes nothing.
+        if ((DRY_RUN)); then
+            reconcile_desktop_gettys
+        elif ((EUID != 0)); then
+            warn "needs root to reconcile the getty/LightDM conflict"
+            warn "fix with: pkexec $SELF_DIR/scripts/fix-desktop-gettys"
+        elif ! reconcile_desktop_gettys; then
+            warn "could not reconcile the getty/LightDM conflict"
+            warn "fix with: pkexec $SELF_DIR/scripts/fix-desktop-gettys"
+        fi
+    fi
+
     # Always show the status report: it is the answer to "did this work?".
     if ((DO_BRAVE)) || [[ -x $BRAVE_PREFIX/brave ]]; then BRAVE_OPTIONAL=1; fi
     status_report
