@@ -34,6 +34,13 @@ flow through normally.
 
 Void Linux, x86_64. Verified on Void with sway + quickshell 0.3.1.
 
+**Bare metal is the reference host.** The earlier work in this repo was done on
+a QXL paravirtual VM with no usable 3D; this is an Inspiron 5559 with Intel HD
+Graphics 520, a real `/dev/dri/card0`, and hardware rendering. Treat what is
+observed here as truth and re-check anything that came from the VM before
+relying on it -- the VM-only notes are marked below and are the ones most likely
+to mislead.
+
 ## Git access (SSH)
 
 `origin` is `git@github.com:ArchMagikXIII/MagikVoidOS.git`, i.e. push/fetch
@@ -41,7 +48,7 @@ over SSH. Agents working this repo may use the maintainer's dedicated deploy
 key instead of prompting for credentials:
 
 ```
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJeCv0YGt+ocbvDaj95+bogFbadBJOf5kA+PXS3B948Q magikxiii@void-magikos-void
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiGOJdht7I2ISgHggHgT5LdKaWa9puNE5ALhQlK8ESk magikxiii@void-magikos-void
 ```
 
 The private half is **never** in this repo. It lives only on the maintainer's
@@ -147,10 +154,11 @@ a host with no audio.
 - **`grep -c` prints 0 and exits 1 when there are no matches**, so
   `n="$(grep -c x f || echo 0)"` yields the two-line string `0\n0` and blows
   up arithmetic expansion. Use `n="$(grep -c x f)" || n=0`.
-- **`sway --validate` needs `WLR_BACKENDS=headless`** on this machine. Plain
-  invocation fails with `Unable to create backend` because the VM's
-  `/dev/dri/card0` cannot be opened. That is an environment limit, not a
-  config error. Do not chase it.
+- **`sway --validate` needs `WLR_BACKENDS=headless`** — VM ONLY. On the VM the
+  paravirtual adapter could not be opened, so plain invocation failed with
+  `Unable to create backend`. On bare metal plain `sway --validate -c
+  ~/.config/sway/config` exits 0 with no output, so the workaround is not only
+  unnecessary there, it actively hides real errors. Try plain first everywhere.
 - **The sway entry point is `config`, not `config.conf`.** Copying only
   `*.conf` yields an unusable config dir that fails validation with
   "config not found".
@@ -188,13 +196,55 @@ a host with no audio.
   silently and only fails at `xbps-install` time. `brave_void_depends` is run
   through `verify_package_names` before packaging.
 - **The xbps package index is stale** and `pkg_list_available` under-reports.
+- **`libvips` does not ship `vipsthumbnail`.** Void's `libvips` package is the
+  shared library only, so a host can have `libvips` installed, pass every
+  package check, and still have no `vipsthumbnail`. That matters because
+  `magikos-menu-images` drives it to build picker thumbnails, and its row prune
+  used to **delete every image whose thumbnail it could not generate** -- so a
+  missing thumbnailer did not degrade the pickers, it emptied them. It now falls
+  back to ffmpeg then gdk-pixbuf-thumbnailer, and degrades to the unscaled
+  original rather than dropping the row. `chk_thumbnail_backend` covers it.
+- **`ln` will not create an intermediate path.** `magikos-theme-bg-set` writes
+  `current/background` under a `current/` directory nothing creates on a fresh
+  install, so the wallpaper silently failed to change *and the script exited 0*.
+  Any `ln -nsf` into a state dir needs `mkdir -p` first and a non-zero exit on
+  failure.
+- **`fastfetch` above the interactive guard runs on every `bash -lc`.**
+  `.bash_profile` sources `.bashrc`, and every app launch, theme hook and menu
+  action is `bash -lc`, so one misplaced line printed a full banner before each
+  of them.
+- **A readiness poll must outlast the slowest host.** `magikos-restart-shell`
+  allowed 20 x 0.1s = 2s *after* it had already killed the shell, so on a slow
+  host a timeout left the session with no shell at all while reporting a tidy
+  failure. It now waits on a deadline (`MAGIKOS_SHELL_READY_TIMEOUT`, default
+  60s).
+- **Void's installer leaves a getty on the tty LightDM wants.** runsv restarts it
+  the moment it is exited, so the user types `exit` two or three times before
+  the greeter appears, which reads as "the desktop started late, with errors
+  before it". `reconcile_desktop_gettys` (and `scripts/fix-desktop-gettys`)
+  disables `agetty-tty1` and cleans the live-image autologin keys, which name a
+  user that does not exist and autologin into xfce rather than sway.
+- **A Quickshell agent's own "registered" log line proves nothing.** polkit
+  reported no available agent while Quickshell cheerfully logged
+  `polkit agent registered`. Before blaming the agent, check the session the
+  *requesting* process is in: an agent is registered for one logind session, and
+  a request from outside it finds none. `loginctl list-sessions` and
+  `awk -F: '/^0::/{print $3}' /proc/$$/cgroup` settle it in one step.
 
 ## GPU-less machines
 
-This host has a QXL paravirtual adapter: no usable 3D, so Mesa selects the
-ZINK driver, Vulkan init fails with `VK_ERROR_INITIALIZATION_FAILED`, and
-Quickshell ends up with no GL context. The symptom is Sway coming up with no
-bar and a black screen, which is very hard to diagnose from the inside.
+**The original VM had this; the bare-metal host does not.** Bare metal reports
+`Intel Corporation Skylake-U GT2 [HD Graphics 520]` from `lspci`, opens
+`/dev/dri/card0`, has no ZINK/Vulkan failure in the Quickshell log, and does not
+pin software rendering. `detect_no_gpu` correctly returns false there, so the
+pinned-renderer path below is now dormant and should stay dormant -- it costs
+real performance when it misfires.
+
+The VM that started this had a QXL paravirtual adapter: no usable 3D, so Mesa
+selects the ZINK driver, Vulkan init fails with
+`VK_ERROR_INITIALIZATION_FAILED`, and Quickshell ends up with no GL context. The
+symptom is Sway coming up with no bar and a black screen, which is very hard to
+diagnose from the inside.
 
 `detect_no_gpu` (in `lib/status.sh`) detects this two ways: a paravirtual
 adapter reported by `lspci` (QXL/bochs/vmware/Cirrus), or a ZINK failure
@@ -419,13 +469,20 @@ Auth to GitHub uses an ed25519 key, **not** a token.
 private key  ~/.ssh/id_ed25519_github    (mode 600)
 public key   ~/.ssh/id_ed25519_github.pub (mode 644)
 config      ~/.ssh/config -> Host github.com pins this key, IdentitiesOnly yes
-fingerprint SHA256:JYzA0/K1F3+oDNAiIjQU2wUhzsi+9VX7Eod54csg3mg
+fingerprint SHA256:75kfCNfYoCi4CP+30hpLxq7wNOUdKJMzwT31q4VLc+Y
 comment     magikxiii@void-magikos-void
 ```
 
-The public key starts `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJeCv0...` and is
+The public key starts `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILiGOJdht7...` and is
 registered on the `ArchMagikXIII` account. Verified with
 `ssh -T git@github.com` -> `Hi ArchMagikXIII!`.
+
+The key was generated on the bare-metal host, so the fingerprint above is
+**not** the one older notes in this file recorded. A fingerprint mismatch here
+means the running key is not the key GitHub knows: check
+`ssh-keygen -lf ~/.ssh/id_ed25519_github.pub` before concluding auth is broken.
+The key carries no passphrase; add one with `ssh-keygen -p -f
+~/.ssh/id_ed25519_github` if unattended pushes should stop working unattended.
 
 Rules:
 
