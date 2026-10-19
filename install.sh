@@ -57,16 +57,22 @@ preflight() {
         exit 1
     fi
     ok "Void Linux detected"
-    local missing=()
-    for c in git curl tar python3 xbps-query; do
-        have "$c" || missing+=("$c")
-    done
-    if ((${#missing[@]})); then
-        err "missing required tools: ${missing[*]}"
-        err "fix with: sudo xbps-install -Syu ${missing[*]}"
+
+    # xbps-query is the one hard requirement: without it we cannot detect Void
+    # or install anything, so there is nothing to bootstrap it with.
+    if ! have xbps-query; then
+        err "xbps-query not found -- this does not look like a Void install"
         exit 1
     fi
-    ok "required tools present"
+
+    # The tools the installer needs in order to *do its job* (clone, unpack the
+    # .deb, build the .xbps). A fresh Void has none of these, so requiring them
+    # up front meant the installer aborted before it had installed anything.
+    # Bootstrap them instead.
+    bootstrap_prerequisites || {
+        err "cannot continue without these tools"
+        exit 1
+    }
 
     if [[ ${XDG_SESSION_TYPE:-} == wayland && ${XDG_CURRENT_DESKTOP:-} == sway ]]; then
         warn "you are inside Sway right now"

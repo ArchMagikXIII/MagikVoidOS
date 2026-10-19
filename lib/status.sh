@@ -91,13 +91,32 @@ detect_no_gpu() {
 chk_is_void() { is_void; }
 
 chk_tools() {
+    # Split the old single check in two. The desktop packages are installed by
+    # Step 1 of the installer; conflating them with the installer's own
+    # prerequisites made one FAIL line cover two unrelated problems, and the
+    # suggested fix ("xbps-install sway quickshell git curl tar python3") read
+    # as if all seven were required up front.
     local missing=()
-    for c in git curl tar python3 xbps-query sway quickshell; do
+    for c in git curl tar python3; do
         have "$c" || missing+=("$c")
     done
-    ((${#missing[@]} == 0)) && return 0
-    CHECK_HINT="missing: ${missing[*]}"$'\n'"fix with: sudo xbps-install -Syu sway quickshell git curl tar python3"
-    return 1
+    if ((${#missing[@]})); then
+        CHECK_HINT="missing installer prerequisites: ${missing[*]}"$'\n'"these are bootstrapped automatically by ./install.sh"$'\n'"fix with: sudo xbps-install -Syu ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
+chk_desktop_packages() {
+    local missing=()
+    for c in sway quickshell; do
+        have "$c" || missing+=("$c")
+    done
+    if ((${#missing[@]})); then
+        CHECK_HINT="missing desktop packages: ${missing[*]}"$'\n'"installed by Step 1 of ./install.sh; it did not complete"$'\n'"fix with: sudo xbps-install -Syu ${missing[*]}"
+        return 1
+    fi
+    return 0
 }
 
 # The stale-index problem: xbps-query -Rs should find sway, since it is
@@ -120,19 +139,51 @@ chk_runtime_clone() {
 }
 
 chk_port_applied() {
-    [[ -f $MAGIKOS_HOME/bin/magikos-pkg-backend ]] || {
-        CHECK_HINT="fix with: ./install.sh --no-packages"; return 1; }
-    grep -q 'MAGIKOS_PKG_BACKEND' "$MAGIKOS_HOME/bin/magikos-pkg-backend" || {
-        CHECK_HINT="the Void port patch is not applied"$'\n'"fix with: ./install.sh --no-packages"; return 1; }
-    return 0
+    # Three distinct causes, previously collapsed into one opaque FAIL:
+    #   1. no runtime at all          -> nothing has been staged yet
+    #   2. runtime but no .git        -> staged by an older installer, or copied
+    #   3. .git present, patch absent -> `git apply` failed, or upstream moved
+    # Case 3 is the one that needs a real diagnostic, so run the check for
+    # dry and report git's own words.
+    if [[ ! -d $MAGIKOS_HOME ]]; then
+        CHECK_HINT="no runtime at $MAGIKOS_HOME"$'\n'"the installer never got as far as staging"$'\n'"fix with: ./install.sh"
+        return 1
+    fi
+    if [[ ! -d $MAGIKOS_HOME/.git ]]; then
+        CHECK_HINT="$MAGIKOS_HOME is not a git clone, so the port patch cannot be tracked"$'\n'"fix with: rm -rf '$MAGIKOS_HOME' && ./install.sh"
+        return 1
+    fi
+
+    # Detect Void-specific modifications to magikos-pkg-backend
+    if grep -qE 'MAGIKOS_PKG_BACKEND.*xbps|backend_is_xbps|xbps-query|No AUR on Void|Void/xbps' "$backend" 2>/dev/null; then
+        return 0
+    fi
+
+    # Not applied. Ask git why, so this names the real problem.
+    local head apply_err
+    head="$(git -C "$MAGIKOS_HOME" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    apply_err="$(git -C "$MAGIKOS_HOME" apply --check "$SELF_DIR/share/void-port.patch" 2>&1)"
+    if [[ -n $apply_err ]]; then
+        CHECK_HINT="port patch is NOT applied (runtime at $head)"$'\n'"git refuses it, so upstream has drifted from share/void-port.patch:"$'\n'"$(printf '%s' "$apply_err" | head -6 | sed 's/^/          /')"$'\n'"fix: refresh the patch against current upstream --"$'\n'"     cd '$MAGIKOS_HOME' && git apply '$SELF_DIR/share/void-port.patch'"
+    else
+        CHECK_HINT="port patch applies cleanly but was never applied"$'\n'"staging stopped between clone and patch"$'\n'"fix with: ./install.sh --no-packages"
+    fi
+    return 1
 }
 
 chk_backend() {
+    if [[ ! -f $MAGIKOS_HOME/bin/magikos-pkg-backend ]]; then
+        CHECK_HINT="no backend file -- see 'Void port patch applied' above for the root cause"
+        return 1
+    fi
     local out
     out="$(bash -c "source '$MAGIKOS_HOME/bin/magikos-pkg-backend' 2>/dev/null && echo \"\$MAGIKOS_PKG_BACKEND\"" 2>/dev/null)"
     if [[ $out == xbps ]]; then return 0; fi
     if [[ -z $out ]]; then
-        CHECK_HINT="magikos-pkg-backend did not load"$'\n'"fix with: ./install.sh --no-packages"
+        # Sourcing failed, so surface why instead of just "did not load".
+        local err_out
+        err_out="$(bash -c "source '$MAGIKOS_HOME/bin/magikos-pkg-backend'" 2>&1 | head -3)"
+        CHECK_HINT="magikos-pkg-backend exists but failed to load:"$'\n'"$(printf '%s' "$err_out" | sed 's/^/          /')"
     else
         CHECK_HINT="backend detected as '$out', expected 'xbps'"$'\n'"the port patch may be partially applied"
     fi
@@ -140,6 +191,10 @@ chk_backend() {
 }
 
 chk_backend_funcs() {
+    if [[ ! -f $MAGIKOS_HOME/bin/magikos-pkg-backend ]]; then
+        CHECK_HINT="no backend file -- see 'Void port patch applied' above for the root cause"
+        return 1
+    fi
     local missing=()
     local fn
     for fn in pkg_installed pkg_list_available pkg_list_installed \
@@ -147,8 +202,8 @@ chk_backend_funcs() {
         bash -c "source '$MAGIKOS_HOME/bin/magikos-pkg-backend' 2>/dev/null && declare -F $fn" >/dev/null \
             || missing+=("$fn")
     done
-    ((${#missing[@]} == 0)) && return 0
-    CHECK_HINT="missing backend functions: ${missing[*]}"$'\n'"fix with: ./install.sh --no-packages"
+    if ((${#missing[@]} == 0)); then return 0; fi
+    CHECK_HINT="magikos-pkg-backend is missing ${#missing[@]} of 7 primitives: ${missing[*]}"$'\n'"the patch added the file but not its full body (partial apply)"$'\n'"fix with: ./install.sh --no-packages"
     return 1
 }
 
@@ -286,6 +341,7 @@ status_report() {
     printf '\033[1m  System\033[0m\n'
     check "running Void Linux"          chk_is_void
     check "required tools installed"    chk_tools
+    check "desktop packages installed"  chk_desktop_packages
     check "xbps package index fresh"    chk_xbps_index
 
     printf '\n\033[1m  MagikOS runtime\033[0m\n'
