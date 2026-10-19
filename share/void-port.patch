@@ -63,6 +63,89 @@ index bfc96bc0..21961a5a 100755
  EOF
  
  if [[ $PRINT_ONLY = "true" ]]; then
+diff --git a/bin/magikos-menu-images b/bin/magikos-menu-images
+index a730962b..a778ce0f 100755
+--- a/bin/magikos-menu-images
++++ b/bin/magikos-menu-images
+@@ -183,15 +183,51 @@ generate_thumbnail() {
+   [[ -f $thumbnail ]] && return
+ 
+   # Callers fan out one generator per image, so keep each vips single-threaded.
+-  # Close the lock fd for vips: an orphaned or hung vips must not keep holding
+-  # the lock after this shell is killed.
+-  if VIPS_CONCURRENCY=1 vipsthumbnail "$image" --size 1536x864 --smartcrop=centre --path "$tmp[Q=82,strip]" {lock_fd}>&-; then
++  # Close the lock fd for the backend: an orphaned or hung generator must not
++  # keep holding the lock after this shell is killed.
++  if render_thumbnail "$image" "$tmp" {lock_fd}>&-; then
+     mv -f "$tmp" "$thumbnail"
+   else
+     rm -f "$tmp" "$thumbnail"
+   fi
+ }
+ 
++# render_thumbnail <image> <output.jpg>
++#
++# vipsthumbnail is the primary backend, but it lives in libvips, a separate
++# package a base install can legitimately be missing. When it was absent every
++# generate failed and the row prune below dropped every image, so the theme and
++# wallpaper pickers opened completely EMPTY instead of showing the originals.
++# Fall back to ffmpeg (already part of the desktop runtime) and then
++# gdk-pixbuf-thumbnailer, so a missing optional package can never blank a
++# picker again.
++#
++# Uses `command -v` rather than magikos-cmd-present: generate_thumbnail is
++# exported into an xargs subshell (see drain_pending_thumbnails), where this
++# helper travels with it but must not assume magikos/bin is on PATH.
++render_thumbnail() {
++  local image="$1"
++  local output="$2"
++
++  if command -v vipsthumbnail >/dev/null 2>&1; then
++    VIPS_CONCURRENCY=1 vipsthumbnail "$image" --size 1536x864 --smartcrop=centre --path "$output[Q=82,strip]" && return 0
++  fi
++
++  # scale=...:force_original_aspect_ratio=increase plus a centred crop
++  # reproduces vips' `--size 1536x864 --smartcrop=centre`: fixed 16:9 output.
++  if command -v ffmpeg >/dev/null 2>&1; then
++    ffmpeg -nostdin -loglevel error -y -i "$image" \
++      -vf 'scale=1536:864:force_original_aspect_ratio=increase,crop=1536:864' \
++      -frames:v 1 -q:v 6 "$output" >/dev/null 2>&1 && return 0
++  fi
++
++  if command -v gdk-pixbuf-thumbnailer >/dev/null 2>&1; then
++    gdk-pixbuf-thumbnailer -s 1536 "$image" "$output" >/dev/null 2>&1 && return 0
++  fi
++
++  return 1
++}
++
+ thumbnail_for() {
+   local image="$1"
+   local signature hash thumbnail
+@@ -228,7 +264,7 @@ thumbnail_for() {
+ drain_pending_thumbnails() {
+   [[ -s $pending_file ]] || return 0
+ 
+-  export -f generate_thumbnail
++  export -f generate_thumbnail render_thumbnail
+   xargs -a "$pending_file" -0 -n 2 -P "$(nproc)" \
+     bash -c 'generate_thumbnail "$1" "$2"' _ >/dev/null 2>&1 || true
+ }
+@@ -257,8 +293,13 @@ elif [[ $rows_cache_hit != true ]]; then
+     pruned=""
+     while IFS=$'\t' read -r row_image row_thumbnail; do
+       if [[ ! -e $row_thumbnail ]]; then
++        # A thumbnail that never generated must NOT delete the image: this used
++        # to prune every row when no thumbnail backend existed, which opened an
++        # empty picker. Show the unscaled original instead -- larger, but the
++        # row is there and the row cache stays uncacheable so the next open
++        # retries generation.
+         rows_cacheable=false
+-        continue
++        row_thumbnail="$row_image"
+       fi
+ 
+       if [[ -z $pruned ]]; then
 diff --git a/bin/magikos-migrate b/bin/magikos-migrate
 index 88936fe6..354af3a2 100755
 --- a/bin/magikos-migrate
@@ -416,6 +499,34 @@ index 4779ef16..cd60c4f5 100755
  fi
  
  if magikos-cmd-present flatpak && flatpak info "${desktop_file_name%.desktop}" >/dev/null 2>&1; then
+diff --git a/bin/magikos-restart-shell b/bin/magikos-restart-shell
+index c620e5dd..9d1ed3ca 100755
+--- a/bin/magikos-restart-shell
++++ b/bin/magikos-restart-shell
+@@ -62,7 +62,15 @@ while timeout 5 quickshell kill -p "$CONFIG_DIR" --any-display >/dev/null 2>&1;
+ # not transient variables from a terminal, SSH connection, or development tool.
+ swaymsg exec magikos-launch-shell >/dev/null 2>&1
+ 
+-for (( attempt = 0; attempt < 20; attempt++ )); do
++# How long to wait for the new shell to answer. The old loop allowed 20 x 0.1s
++# = 2s, which a software-rendered host (no GPU, WLR_RENDERER=pixman) cannot
++# meet: the kill had already happened, so a timeout left the session with NO
++# shell at all while reporting "Magikos shell did not become ready after
++# restart". Wait on a deadline instead and default it generously.
++ready_timeout=${MAGIKOS_SHELL_READY_TIMEOUT:-60}
++ready_deadline=$((SECONDS + ready_timeout))
++
++while (( SECONDS < ready_deadline )); do
+   if MAGIKOS_PATH="$session_magikos_path" MAGIKOS_SHELL_IPC_TIMEOUT=0.5s magikos-shell shell ping >/dev/null 2>&1; then
+     # The session stays compositor-locked after the old lock client died, so
+     # re-acquire the lock and let the user authenticate out of it.
+@@ -82,5 +90,5 @@ for (( attempt = 0; attempt < 20; attempt++ )); do
+   sleep 0.1
+ done
+ 
+-echo "Magikos shell did not become ready after restart." >&2
++echo "Magikos shell did not become ready within ${ready_timeout}s after restart." >&2
+ exit 1
 diff --git a/bin/magikos-setup-security-fingerprint b/bin/magikos-setup-security-fingerprint
 index 15663b7c..e7a12089 100755
 --- a/bin/magikos-setup-security-fingerprint
@@ -434,6 +545,43 @@ index 15663b7c..e7a12089 100755
    sudo pacman -Rdd --noconfirm libfprint-git
  fi
  
+diff --git a/bin/magikos-theme-bg-set b/bin/magikos-theme-bg-set
+index 2ec7dc63..909667b2 100755
+--- a/bin/magikos-theme-bg-set
++++ b/bin/magikos-theme-bg-set
+@@ -18,7 +18,14 @@ if [[ ! -f $BACKGROUND ]]; then
+ fi
+ 
+ # Create symlink to the new background
+-ln -nsf "$BACKGROUND" "$CURRENT_BACKGROUND_LINK"
++# The state dir is created here because ln refuses to create an intermediate
++# path. Without this the wallpaper silently failed to change: ln printed an
++# error the picker never surfaced and the script still exited 0.
++mkdir -p "$(dirname "$CURRENT_BACKGROUND_LINK")"
++if ! ln -nsf "$BACKGROUND" "$CURRENT_BACKGROUND_LINK"; then
++  echo "Could not set background: failed to link $CURRENT_BACKGROUND_LINK" >&2
++  exit 1
++fi
+ 
+ # Update the live shell background immediately when it is running. The
+ # background plugin also polls this symlink, but IPC avoids the visible delay.
+diff --git a/bin/magikos-theme-list b/bin/magikos-theme-list
+index 3aa41b97..0a456bd5 100755
+--- a/bin/magikos-theme-list
++++ b/bin/magikos-theme-list
+@@ -7,6 +7,10 @@
+ export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"
+ 
+ {
+-  find ~/.config/magikos/themes/ -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -printf '%f\n'
+-  find "$MAGIKOS_PATH/themes/" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'
++  # Both theme roots are optional (user themes only exist once the user creates
++  # one), so probe each before handing it to find: an unguarded find prints a
++  # raw "No such file or directory" to stderr on every call.
++  user_themes="$HOME/.config/magikos/themes"
++  [[ -d $user_themes ]] && find "$user_themes" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -printf '%f\n'
++  [[ -d "$MAGIKOS_PATH/themes" ]] && find "$MAGIKOS_PATH/themes" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'
+ } | sort -u | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
 diff --git a/bin/magikos-update-aur-pkgs b/bin/magikos-update-aur-pkgs
 index c0962edd..af979677 100755
 --- a/bin/magikos-update-aur-pkgs
@@ -688,7 +836,7 @@ index 3e3e878a..3998a6dd 100644
  
    function fileUri(path) {
 diff --git a/shell/services/AppLibrary.qml b/shell/services/AppLibrary.qml
-index 6ab657fb..307b1951 100644
+index 6ab657fb..0b85b863 100644
 --- a/shell/services/AppLibrary.qml
 +++ b/shell/services/AppLibrary.qml
 @@ -82,7 +82,10 @@ Item {
@@ -699,7 +847,7 @@ index 6ab657fb..307b1951 100644
 +    // Void/xbps port: UWSM is an Arch session-manager dependency that is not
 +    // installed here, so fall back to a plain gtk-launch. The test runs inside
 +    // the bash -lc string Util.execDetached executes, not in JS.
-+    Util.execDetached("(command -v uwsm-app >/dev/null 2>&1 && echo 'uwsm-app -- gtk-launch' || echo 'gtk-launch') " + Util.shellQuote(id + ".desktop"))
++    Util.execDetached("$(command -v uwsm-app >/dev/null 2>&1 && echo 'uwsm-app -- gtk-launch' || echo 'gtk-launch') " + Util.shellQuote(id + ".desktop"))
    }
  
    function remove(desktopId, name) {

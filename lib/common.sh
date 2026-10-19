@@ -158,9 +158,31 @@ local failures=0
         ((failures++))
     fi
 
+    # User-writable theme/background overrides. magikos-theme-list reads
+    # ~/.config/magikos/themes and the wallpaper picker reads
+    # ~/.config/magikos/backgrounds/<theme>. Upstream `mkdir -p`s neither, so
+    # on a fresh install `magikos theme list` printed a raw find error and the
+    # wallpaper picker was handed only one nonexistent directory.
+    if ensure_dir "$MAGIKOS_USER_CONFIG/themes" "user themes dir" \
+       && ensure_dir "$MAGIKOS_USER_CONFIG/backgrounds" "user backgrounds dir"; then
+        :
+    else
+        ((failures++))
+    fi
+
     # Shell state dir (quickshell logs).
     if ensure_dir "$HOME/.local/state" "state root" \
        && ensure_dir "$MAGIKOS_STATE_DIR" "magikos state"; then
+        :
+    else
+        ((failures++))
+    fi
+
+    # Current theme/background staging. magikos-theme-bg-set writes
+    # $MAGIKOS_STATE_DIR/current/background and ln refuses to create the
+    # intermediate path, so without this a wallpaper change failed with
+    # "No such file or directory" while the command still exited 0.
+    if ensure_dir "$MAGIKOS_STATE_DIR/current" "current theme state"; then
         :
     else
         ((failures++))

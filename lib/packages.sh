@@ -68,6 +68,19 @@ VOID_BASE_PACKAGES=(
     dejavu-fonts-ttf
     noto-fonts-ttf
 
+    # Qt image codecs for the shell. Void's qt6-base ships only gif/ico/jpeg/svg,
+    # so without this the shell cannot decode the .webp that 7 of the 16
+    # upstream theme backgrounds use: the wallpaper picker listed them fine but
+    # setting one rendered nothing ("Unsupported image format"). ImagePicker and
+    # Background both load originals through QML Image.
+    qt6-imageformats
+
+    # Thumbnail backend for every image picker (theme switcher, wallpaper
+    # picker, clipboard images). magikos-menu-images drives vipsthumbnail; on
+    # Void that is libvips, a separate package. Without it the picker script
+    # falls back to ffmpeg, so this is speed rather than correctness.
+    libvips
+
     # Portal / session plumbing
     xdg-desktop-portal
     xdg-desktop-portal-gtk

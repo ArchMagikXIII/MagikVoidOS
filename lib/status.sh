@@ -416,6 +416,25 @@ chk_theme() {
     return 0
 }
 
+# Every image picker (theme switcher, wallpaper picker, clipboard images) goes
+# through magikos-menu-images, which shells out to a thumbnailer. Upstream
+# assumes vipsthumbnail, which lives in libvips -- a separate package on Void.
+# Note `libvips` ships the shared library only; the vipsthumbnail CLI is not in
+# that package, so a host can have libvips installed and still have no
+# vipsthumbnail, which is exactly the state this was found in.
+# magikos-menu-images now falls back to ffmpeg then gdk-pixbuf-thumbnailer, so
+# this only fails when NO backend exists -- which is what emptied the pickers.
+chk_thumbnail_backend() {
+    local c
+    for c in vipsthumbnail ffmpeg gdk-pixbuf-thumbnailer; do
+        if have "$c"; then
+            return 0
+        fi
+    done
+    CHECK_HINT="no thumbnail backend found (vipsthumbnail / ffmpeg / gdk-pixbuf-thumbnailer)"$'\n'"image pickers open EMPTY: magikos-menu-images prunes every row whose thumbnail it could not generate"$'\n'"fix with: sudo xbps-install -Syu ffmpeg   # libvips works too, if your release ships vipsthumbnail"
+    return 1
+}
+
 # A machine with no usable 3D GPU (VM with a paravirtual adapter, headless
 # server, nested virt) makes Mesa pick the ZINK driver, which then fails with
 # VK_ERROR_INITIALIZATION_FAILED. Quickshell then has no GL context and the bar
@@ -606,9 +625,10 @@ check "runtime is a git clone"    chk_runtime_clone
     printf '\n\033[1m  Quickshell + env\033[0m\n'
     check "shell.json staged"            chk_shell_json
     check "shell font (bar glyphs)"      chk_shell_font
-    check "app launch shims (uwsm/systemd-run)" chk_launch_shims
+check "app launch shims (uwsm/systemd-run)" chk_launch_shims
     check "Qt can decode .webp wallpapers" chk_qt_webp
     check "theme set (pickers work)"     chk_theme
+    check "image thumbnail backend"      chk_thumbnail_backend
     check "MAGIKOS_PATH in ~/.profile"   chk_env
     check "Quickshell log clean"         chk_shell_log
     check "sway session running"         chk_sway_session
