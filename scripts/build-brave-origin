@@ -10,6 +10,8 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
 source "$ROOT_DIR/lib/common.sh"
+# verify_package_names (used to guard the generated dependency list) lives here.
+source "$ROOT_DIR/lib/packages.sh"
 source "$ROOT_DIR/lib/brave-origin.sh"
 
 while (($#)) && [[ $1 != --* ]]; do shift; done

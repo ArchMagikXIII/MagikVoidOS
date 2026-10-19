@@ -24,6 +24,8 @@ source "$SELF_DIR/lib/common.sh"
 source "$SELF_DIR/lib/packages.sh"
 # shellcheck source=lib/stage-magikos.sh
 source "$SELF_DIR/lib/stage-magikos.sh"
+# shellcheck source=lib/fonts.sh
+source "$SELF_DIR/lib/fonts.sh"
 # shellcheck source=lib/brave-origin.sh
 source "$SELF_DIR/lib/brave-origin.sh"
 # shellcheck source=lib/status.sh
@@ -111,7 +113,7 @@ main() {
     local rc=0
 
     if ((DO_PACKAGES)); then
-        log "Step 1/3: Void base packages"
+        log "Step 1/4: Void base packages"
         if ! ensure_sudo; then
             err "sudo required for package install"
             err "re-run with --no-packages to skip this step"
@@ -123,16 +125,25 @@ main() {
             rc=1
         fi
     else
-        log "Step 1/3: base packages skipped (--no-packages)"
+        log "Step 1/4: base packages skipped (--no-packages)"
     fi
 
-    log "Step 2/3: MagikOS runtime"
+    log "Step 2/4: MagikOS runtime"
     if ! stage_all; then
         err "staging failed"
         rc=1
     fi
 
-    log "Step 3/3: Brave Origin"
+    # Fonts are not an xbps package: Void's nerd-fonts-ttf is a 1.5 GB
+    # aggregator. Fetch only the family the bar actually draws with, and make
+    # "monospace" resolve to it so the glyphs are not tofu boxes.
+    log "Step 3/4: shell fonts"
+    if ! install_shell_fonts; then
+        warn "shell font install incomplete; bar icons may render as boxes"
+        warn "retry with: $SELF_DIR/install.sh --no-packages"
+    fi
+
+    log "Step 4/4: Brave Origin"
     if ((DO_BRAVE)); then
         if ! brave_build; then
             warn "Brave Origin build failed (MagikOS still works without it)"
