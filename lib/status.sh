@@ -130,12 +130,11 @@ chk_xbps_index() {
 }
 
 chk_runtime_dir() {
-    [[ -d $MAGIKOS_HOME ]]; CHECK_HINT="fix with: ./install.sh --no-packages"
-    return $?
+    [[ -d $MAGIKOS_HOME ]]; local rc=$?; CHECK_HINT="fix with: ./install.sh --no-packages"; return $rc
 }
 
 chk_runtime_clone() {
-    [[ -d $MAGIKOS_HOME/.git ]]; CHECK_HINT="fix with: ./install.sh --no-packages"; return $?
+    [[ -d $MAGIKOS_HOME/.git ]]; local rc=$?; CHECK_HINT="fix with: ./install.sh --no-packages"; return $rc
 }
 
 chk_port_applied() {
@@ -208,10 +207,10 @@ chk_backend_funcs() {
     return 1
 }
 
-chk_sway_dir() { [[ -d $MAGIKOS_USER_SWAY ]]; CHECK_HINT="fix with: ./install.sh --no-packages"; return $?; }
+chk_sway_dir() { [[ -d $MAGIKOS_USER_SWAY ]]; local rc=$?; CHECK_HINT="fix with: ./install.sh --no-packages"; return $rc; }
 
 chk_sway_config() {
-    [[ -f $MAGIKOS_USER_SWAY/config ]]; CHECK_HINT="the sway entry point is 'config' (not config.conf)"$'\n'"fix with: ./install.sh --no-packages"; return $?
+    [[ -f $MAGIKOS_USER_SWAY/config ]]; local rc=$?; CHECK_HINT="the sway entry point is 'config' (not config.conf)"$'\n'"fix with: ./install.sh --no-packages"; return $rc
 }
 
 chk_sway_nofullprefix() {
@@ -268,32 +267,27 @@ chk_graphics_capable() {
 }
 
 chk_shell_json() {
-    [[ -f $MAGIKOS_USER_CONFIG/shell.json ]]; CHECK_HINT="fix with: ./install.sh --no-packages"; return $?
+    [[ -f $MAGIKOS_USER_CONFIG/shell.json ]]; local rc=$?; CHECK_HINT="fix with: ./install.sh --no-packages"; return $rc
 }
 
 chk_env() {
-    grep -q 'MAGIKOS_PATH' "$HOME/.profile" 2>/dev/null; \
-        CHECK_HINT="MAGIKOS_PATH is not in ~/.profile, so 'magikos-*' only works inside Sway"$'\n'"fix with: ./install.sh --no-packages"
-    return $?
+    grep -q 'MAGIKOS_PATH' "$HOME/.profile" 2>/dev/null; local rc=$?; CHECK_HINT="MAGIKOS_PATH is not in ~/.profile, so 'magikos-*' only works inside Sway"$'\n'"fix with: ./install.sh --no-packages"; return $rc
 }
 
 chk_brave() {
-    [[ -x $BRAVE_PREFIX/brave ]]; CHECK_HINT="not installed"$'\n'"fix with: ./scripts/build-brave-origin"; return $?
+    [[ -x $BRAVE_PREFIX/brave ]]; local rc=$?; CHECK_HINT="not installed"$'\n'"fix with: ./scripts/build-brave-origin"; return $rc
 }
 
 chk_brave_cmd() {
-    command -v brave-origin >/dev/null 2>&1 || [[ -x /usr/bin/brave-origin ]]; \
-        CHECK_HINT="/usr/bin/brave-origin missing"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $?
+    command -v brave-origin >/dev/null 2>&1 || [[ -x /usr/bin/brave-origin ]]; local rc=$?; CHECK_HINT="/usr/bin/brave-origin missing"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
 }
 
 chk_brave_desktop() {
-    [[ -f /usr/share/applications/brave-origin.desktop ]]; \
-        CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $?
+    [[ -f /usr/share/applications/brave-origin.desktop ]]; local rc=$?; CHECK_HINT="desktop entry missing (no launcher icon)"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
 }
 
 chk_brave_icon() {
-    [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; \
-        CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $?
+    [[ -f /usr/share/icons/hicolor/256x256/apps/brave-origin.png ]]; local rc=$?; CHECK_HINT="icon missing; brave-origin.desktop references 'brave-origin'"$'\n'"fix with: sudo ./scripts/build-brave-origin"; return $rc
 }
 
 # Only meaningful while a Sway session is running.
