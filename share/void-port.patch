@@ -1,0 +1,705 @@
+diff --git a/bin/magikos-channel-current b/bin/magikos-channel-current
+index e7257201..8ec43780 100755
+--- a/bin/magikos-channel-current
++++ b/bin/magikos-channel-current
+@@ -4,6 +4,8 @@
+ 
+ set -euo pipefail
+ 
++source magikos-pkg-backend
++
+ # Dev is a linked source checkout: MAGIKOS_PATH points somewhere other than
+ # the package-backed install at /usr/share/magikos. This takes precedence over
+ # the package channels, since the checkout overrides whatever is installed.
+@@ -16,9 +18,9 @@ fi
+ # repo, so their presence alone means edge. magikos / magikos-settings come
+ # from either the stable or rc mirror, distinguished by magikos-version-channel
+ # (which reports the mirror as its first token).
+-if pacman -Q magikos-dev magikos-settings-dev >/dev/null 2>&1; then
++if pkg_installed magikos-dev magikos-settings-dev; then
+   echo edge
+-elif pacman -Q magikos magikos-settings >/dev/null 2>&1; then
++elif pkg_installed magikos magikos-settings; then
+   channel=$(magikos-version-channel 2>/dev/null | awk '{ print $1 }')
+   case "$channel" in
+     stable) echo stable ;;
+diff --git a/bin/magikos-channel-set b/bin/magikos-channel-set
+index 980d8d2a..ce77ddef 100755
+--- a/bin/magikos-channel-set
++++ b/bin/magikos-channel-set
+@@ -88,7 +88,12 @@ fi
+ 
+ magikos-refresh-pacman "$pacman_channel"
+ # --ask 4 accepts magikos <-> magikos-dev replacement prompts without file overwrites.
+-sudo env MAGIKOS_UPDATE_PACMAN=1 pacman -S --needed --noconfirm --ask 4 "${packages[@]}"
++# Void/xbps port: the magikos/magikos-dev package pair is an Arch/AUR concept
++# with no Void counterpart, and xbps-install has no --ask. The package side of a
++# channel switch is a no-op here; use magikos-refresh-pacman to update.
++if command -v pacman >/dev/null 2>&1; then
++  sudo env MAGIKOS_UPDATE_PACMAN=1 pacman -S --needed --noconfirm --ask 4 "${packages[@]}"
++fi
+ 
+ if [[ -z $dev_checkout ]]; then
+   magikos-dev-unlink --no-reboot
+diff --git a/bin/magikos-debug b/bin/magikos-debug
+index bfc96bc0..21961a5a 100755
+--- a/bin/magikos-debug
++++ b/bin/magikos-debug
+@@ -37,7 +37,7 @@ fi
+ cat > "$LOG_FILE" <<EOF
+ Date: $(date)
+ Hostname: $(hostname)
+-Magikos Package: $(pacman -Q magikos-dev 2>/dev/null || pacman -Q magikos 2>/dev/null || echo "unknown")
++Magikos Package: $(magikos-version 2>/dev/null || echo "unknown")
+ 
+ =========================================
+ SYSTEM INFORMATION
+@@ -57,7 +57,7 @@ $(journalctl -b -p 4..1)
+ =========================================
+ INSTALLED PACKAGES
+ =========================================
+-$({ expac -S '%n %v (%r)' $(pacman -Qqe) 2>/dev/null; comm -13 <(pacman -Sql | sort) <(pacman -Qqe | sort) | xargs -r expac -Q '%n %v (AUR)'; } | sort)
++$(if command -v xbps-query >/dev/null 2>&1; then xbps-query -l; else pacman -Q; fi 2>/dev/null || echo "Failed to get package list")
+ EOF
+ 
+ if [[ $PRINT_ONLY = "true" ]]; then
+diff --git a/bin/magikos-migrate b/bin/magikos-migrate
+index 88936fe6..354af3a2 100755
+--- a/bin/magikos-migrate
++++ b/bin/magikos-migrate
+@@ -5,8 +5,11 @@
+ 
+ set -euo pipefail
+ 
+-mode="run"
++# Sibling library, sourced by absolute path: $MAGIKOS_PATH/bin only joins PATH
++# further down, and wait_for_pacman_transaction needs the backend before then.
++source "$(dirname "$(readlink -f "$0")")/magikos-pkg-backend"
+ 
++mode="run"
+ usage() {
+   echo "Usage: magikos-migrate [--pending]"
+ }
+@@ -66,17 +69,23 @@ if [[ $mode == "pending" ]]; then
+ fi
+ 
+ wait_for_pacman_transaction() {
+-  local lock_file=/var/lib/pacman/db.lck
++  local lock_file
++
++  if backend_is_xbps; then
++    lock_file=/var/db/xbps/lock
++  else
++    lock_file=/var/lib/pacman/db.lck
++  fi
+ 
+   [[ -e $lock_file ]] || return 0
+-  echo "Waiting for pacman transaction to finish before running Magikos migrations..."
++  echo "Waiting for package transaction to finish before running Magikos migrations..."
+ 
+   for _ in {1..900}; do
+     [[ -e $lock_file ]] || return 0
+     sleep 1
+   done
+ 
+-  echo "Pacman transaction is still running; Magikos migrations will retry on next login."
++  echo "Package transaction is still running; Magikos migrations will retry on next login."
+   exit 0
+ }
+ 
+diff --git a/bin/magikos-pkg-aur-add b/bin/magikos-pkg-aur-add
+index aabec1dd..2d56121d 100755
+--- a/bin/magikos-pkg-aur-add
++++ b/bin/magikos-pkg-aur-add
+@@ -6,13 +6,21 @@
+ 
+ source magikos-pkg-backend
+ 
++# There is no AUR on Void/xbps. Non-free and Arch-only packages come from the
++# Void repositories (and xbps-src for source builds), so this command has no
++# equivalent here and reports that rather than silently doing nothing.
++if backend_is_xbps; then
++  echo "Error: the AUR does not exist on Void/xbps; use magikos-pkg-install for Void packages" >&2
++  exit 1
++fi
++
+ if magikos-pkg-missing "$@"; then
+   yay -S --noconfirm --needed "$@" || exit 1
+ fi
+ 
+ for pkg in "$@"; do
+-  # Secondary check to handle states where pacman doesn't actually register an error
+-  if ! pacman -Q "$pkg" &>/dev/null; then
++  # Secondary check to handle states where the backend doesn't actually register an error
++  if ! pkg_installed "$pkg"; then
+     echo -e "\033[31mError: Package '$pkg' did not install\033[0m" >&2
+     exit 1
+   fi
+diff --git a/bin/magikos-pkg-backend b/bin/magikos-pkg-backend
+index e1bd9269..02193b8f 100644
+--- a/bin/magikos-pkg-backend
++++ b/bin/magikos-pkg-backend
+@@ -3,58 +3,153 @@
+ # magikos:summary=Package backend detection shared by the magikos pkg commands. Source it; do not execute.
+ 
+ # Magikos manages packages with pacman (Arch, CachyOS). A dnf/Fedora backend
+-# used to live here but was forked into Magikos-Fedora; the only supported
+-# backend is pacman. MAGIKOS_PKG_BACKEND may be preset by tests/callers to
+-# avoid probing the system, otherwise it is resolved here and always pacman.
++# used to live here but was forked into Magikos-Fedora. This Void port adds an
++# xbps backend alongside pacman so the pkg commands work on Void Linux too;
++# the backend is detected, so this file stays correct on Arch.
++#
++# Void notes:
++#   * xbps-query with no mode reads the *local* pkgdb, so pkg_installed is
++#     accurate even when the repository index is stale.
++#   * xbps-query -R/-Rs read the *cached repository index*. If that index is
++#     stale, repo lookups miss packages that are in fact installed. Run
++#     `sudo xbps-install -S` to refresh it.
++#   * xbps prints "name-version_rev", not bare names. Every list function below
++#     normalises back to bare names, matching what the pacman functions return.
++#
++# MAGIKOS_PKG_BACKEND may be preset by tests/callers to avoid probing.
+ 
+ if [[ -z ${MAGIKOS_PKG_BACKEND:-} ]]; then
+-  if ! command -v pacman >/dev/null 2>&1; then
+-    echo "Error: pacman not found; Magikos requires an Arch/CachyOS system" >&2
++  if command -v xbps-query >/dev/null 2>&1; then
++    MAGIKOS_PKG_BACKEND=xbps
++  elif command -v pacman >/dev/null 2>&1; then
++    MAGIKOS_PKG_BACKEND=pacman
++  else
++    echo "Error: no supported package manager found; Magikos needs xbps-query (Void) or pacman (Arch/CachyOS)" >&2
+     return 1 2>/dev/null || exit 1
+   fi
+-  MAGIKOS_PKG_BACKEND=pacman
+ fi
+ 
++backend_is_xbps() {
++  [[ $MAGIKOS_PKG_BACKEND == xbps ]]
++}
++
+ backend_is_pacman() {
+-  return 0
++  [[ $MAGIKOS_PKG_BACKEND == pacman ]]
++}
++
++# xbps reports "name-version_rev" and, in list modes, a description column after
++# it; callers expect bare package names one per line, the way pacman's -Qq/-Qqe
++# do. Strip from the version onwards. A version always starts with a digit and
++# runs to the first space, which also covers the letter-bearing snapshot versions
++# xbps uses (xkblayout-state-1b_1) that a [0-9._] class misses.
++_xbps_strip_version() {
++  sed -E 's/-[0-9][^ ]*.*$//'
++}
++
++# Strip the "ii " / "[-] " state marker that -l and -Rs prepend.
++_xbps_strip_marker() {
++  sed -E 's/^(ii|\[-\]|ii |[-]) +//'
+ }
+ 
+ # True when every named package is installed.
+ pkg_installed() {
+   local pkg
+   for pkg in "$@"; do
+-    pacman -Q "$pkg" &>/dev/null || return 1
++    if backend_is_xbps; then
++      xbps-query "$pkg" >/dev/null 2>&1 || return 1
++    else
++      pacman -Q "$pkg" &>/dev/null || return 1
++    fi
+   done
+ }
+ 
+ # Every package available to install, one name per line.
+ pkg_list_available() {
+-  pacman -Slq
++  if backend_is_xbps; then
++    xbps-query -Rs --regex '.' 2>/dev/null | _xbps_strip_marker | _xbps_strip_version
++  else
++    pacman -Slq
++  fi
+ }
+ 
+ # Every installed package, one name per line.
+ pkg_list_installed() {
+-  pacman -Qq
++  if backend_is_xbps; then
++    xbps-query -l 2>/dev/null | _xbps_strip_marker | _xbps_strip_version
++  else
++    pacman -Qq
++  fi
+ }
+ 
+ # Explicitly installed packages (not pulled in as dependencies).
+ pkg_list_explicit() {
+-  pacman -Qqe
++  if backend_is_xbps; then
++    xbps-query -m 2>/dev/null | _xbps_strip_version
++  else
++    pacman -Qqe
++  fi
++}
++
++# Installed packages no longer required by anything (pacman -Qtdq).
++pkg_list_orphans() {
++  if backend_is_xbps; then
++    xbps-query -O 2>/dev/null | _xbps_strip_version
++  else
++    pacman -Qtdq
++  fi
++}
++
++# Which installed package owns a file path (pacman -Qo).
++pkg_owns_file() {
++  if backend_is_xbps; then
++    xbps-query -o "$1" >/dev/null 2>&1
++  else
++    pacman -Qo "$1" >/dev/null 2>&1
++  fi
++}
++
++# Name of the installed package owning a file path (pacman -Qqo). xbps prefixes
++# the name with the version ("sway-1.12_1: /usr/bin/sway"), so strip it back to
++# the bare name the pacman form returns.
++pkg_file_owner() {
++  if backend_is_xbps; then
++    xbps-query -o "$1" 2>/dev/null | head -1 | sed -E 's/-[0-9][^:]*:.*$//'
++  else
++    pacman -Qqo "$1" 2>/dev/null | head -1
++  fi
+ }
+ 
+ # Details for a package that is available but not necessarily installed.
+ pkg_info_new() {
+-  pacman -Sii "$1"
++  if backend_is_xbps; then
++    xbps-query -R -s "$1" 2>/dev/null
++  else
++    pacman -Sii "$1"
++  fi
+ }
+ 
+ # Details for an installed package.
+ pkg_info_installed() {
+-  pacman -Qi "$1"
++  if backend_is_xbps; then
++    xbps-query -S "$1" 2>/dev/null
++  else
++    pacman -Qi "$1"
++  fi
+ }
+ 
+ # Privileged transactions stay as command arrays so callers keep control of
+ # sudo and root handling exactly as they did against raw pacman.
+-PKG_INSTALL_CMD=(pacman -S --noconfirm --needed)
+-PKG_REMOVE_CMD=(pacman -Rns --noconfirm)
+-PKG_UPGRADE_CMD=(env MAGIKOS_UPDATE_PACMAN=1 pacman -Syu --noconfirm)
+-PKG_SYNC_CMD=(env MAGIKOS_UPDATE_PACMAN=1 pacman -Syyuu --noconfirm)
++if backend_is_xbps; then
++  # -y assume yes, -S sync the index first (Void has no --needed; xbps skips
++  # already-installed packages by default).
++  PKG_INSTALL_CMD=(xbps-install -yS)
++  # -R recursive (drop deps), -y assume yes.
++  PKG_REMOVE_CMD=(xbps-remove -Ry)
++  PKG_UPGRADE_CMD=(env MAGIKOS_UPDATE_XBPS=1 xbps-install -Suy)
++  PKG_SYNC_CMD=(env MAGIKOS_UPDATE_XBPS=1 xbps-install -S)
++else
++  PKG_INSTALL_CMD=(pacman -S --noconfirm --needed)
++  PKG_REMOVE_CMD=(pacman -Rns --noconfirm)
++  PKG_UPGRADE_CMD=(env MAGIKOS_UPDATE_PACMAN=1 pacman -Syu --noconfirm)
++  PKG_SYNC_CMD=(env MAGIKOS_UPDATE_PACMAN=1 pacman -Syyuu --noconfirm)
++fi
+diff --git a/bin/magikos-pkg-install b/bin/magikos-pkg-install
+index 33fd0b75..a749884a 100755
+--- a/bin/magikos-pkg-install
++++ b/bin/magikos-pkg-install
+@@ -5,7 +5,11 @@
+ 
+ source magikos-pkg-backend
+ 
+-preview_cmd='pacman -Sii {1}'
++if backend_is_xbps; then
++  preview_cmd='xbps-query -R -s {1}'
++else
++  preview_cmd='pacman -Sii {1}'
++fi
+ 
+ fzf_args=(
+   --multi
+diff --git a/bin/magikos-pkg-remove b/bin/magikos-pkg-remove
+index bed5b8bf..86e60f7a 100755
+--- a/bin/magikos-pkg-remove
++++ b/bin/magikos-pkg-remove
+@@ -5,7 +5,11 @@
+ 
+ source magikos-pkg-backend
+ 
+-preview_cmd='pacman -Qi {1}'
++if backend_is_xbps; then
++  preview_cmd='xbps-query -S {1}'
++else
++  preview_cmd='pacman -Qi {1}'
++fi
+ 
+ fzf_args=(
+   --multi
+diff --git a/bin/magikos-refresh-pacman b/bin/magikos-refresh-pacman
+index 15ce9ba6..5cbae78f 100755
+--- a/bin/magikos-refresh-pacman
++++ b/bin/magikos-refresh-pacman
+@@ -7,6 +7,19 @@ export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"
+ 
+ source magikos-pkg-backend
+ 
++# Void/xbps port: the stable/rc/edge channels below are MagikOS's own pacman
++# repositories, which have no analogue here — on Void, MagikOS runs as a source
++# checkout rather than a package, so there is no channel to pin. Refresh the
++# xbps index and upgrade instead, leaving the MagikOS channel a no-op.
++if backend_is_xbps; then
++  if [[ ${1:-stable} != "stable" ]]; then
++    echo "Note: MagikOS package channels do not apply on Void/xbps; keeping the existing xbps repositories."
++  fi
++  magikos-hook pre-refresh-pacman
++  sudo env MAGIKOS_UPDATE_XBPS=1 xbps-install -Suy
++  exit 0
++fi
++
+ sudo cp -f /etc/pacman.conf /etc/pacman.conf.bak
+ sudo cp -f /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak
+ 
+diff --git a/bin/magikos-reinstall-pkgs b/bin/magikos-reinstall-pkgs
+index 0beb4d5b..3c00c528 100755
+--- a/bin/magikos-reinstall-pkgs
++++ b/bin/magikos-reinstall-pkgs
+@@ -12,6 +12,16 @@ source magikos-pkg-backend
+ 
+ # Reinstall all default Magikos packages from the stable channel and downgrade any packages that are too new.
+ 
++# Void/xbps port: install/magikos-base.packages is a CachyOS package set (206
++# entries, many of them cachyos-* with no Void analogue). xbps would abort on
++# the first unknown name, so this cannot be replayed on Void. The equivalent is
++# a Void base package list, which does not exist upstream.
++if backend_is_xbps; then
++  echo "Note: the MagikOS base package set is CachyOS/Arch-specific and is not applied on Void." >&2
++  echo "      Use the Void repositories directly (magikos-pkg-install) for anything missing." >&2
++  exit 0
++fi
++
+ # Set the package repository to the stable mirrors
+ magikos-refresh-pacman
+ 
+diff --git a/bin/magikos-remove-launcher-entry b/bin/magikos-remove-launcher-entry
+index 4779ef16..cd60c4f5 100755
+--- a/bin/magikos-remove-launcher-entry
++++ b/bin/magikos-remove-launcher-entry
+@@ -7,6 +7,8 @@
+ 
+ set -e
+ 
++source "$(dirname "$(readlink -f "$0")")/magikos-pkg-backend"
++
+ desktop_id="${1-}"
+ entry_name="${2-}"
+ 
+@@ -84,11 +86,11 @@ if is_user_desktop_file; then
+   exit 0
+ fi
+ 
+-if package_name="$(pacman -Qqo "$desktop_file" 2>/dev/null | head -1)" && [[ -n $package_name ]]; then
++if package_name="$(pkg_file_owner "$desktop_file" 2>/dev/null)" && [[ -n $package_name ]]; then
+   display_name="${entry_name:-$desktop_name}"
+   quoted_package="$(printf '%q' "$package_name")"
+   quoted_display="$(printf '%q' "$display_name")"
+-  exec magikos-launch-floating-terminal-with-presentation "echo Uninstalling $quoted_display...; sudo pacman -Rns $quoted_package"
++  exec magikos-launch-floating-terminal-with-presentation "echo Uninstalling $quoted_display...; sudo ${PKG_REMOVE_CMD[*]} $quoted_package"
+ fi
+ 
+ if magikos-cmd-present flatpak && flatpak info "${desktop_file_name%.desktop}" >/dev/null 2>&1; then
+diff --git a/bin/magikos-setup-security-fingerprint b/bin/magikos-setup-security-fingerprint
+index 15663b7c..e7a12089 100755
+--- a/bin/magikos-setup-security-fingerprint
++++ b/bin/magikos-setup-security-fingerprint
+@@ -74,10 +74,9 @@ fi
+ # Install required packages
+ echo "Installing required packages..."
+ 
+-# libfprint-git provides+conflicts libfprint; pacman -S --noconfirm
+-# defaults the conflict prompt to N and aborts. Pre-remove it (deps-only,
+-# so an installed fprintd stays put) so stock libfprint installs cleanly.
+-if pacman -Q libfprint-git &>/dev/null; then
++# Void/xbps port: libfprint-git is an AUR package that conflicts with the stock
++# libfprint. There is no AUR here, so this pre-removal never applies.
++if command -v pacman >/dev/null 2>&1 && pacman -Q libfprint-git &>/dev/null; then
+   sudo pacman -Rdd --noconfirm libfprint-git
+ fi
+ 
+diff --git a/bin/magikos-update-aur-pkgs b/bin/magikos-update-aur-pkgs
+index c0962edd..af979677 100755
+--- a/bin/magikos-update-aur-pkgs
++++ b/bin/magikos-update-aur-pkgs
+@@ -4,6 +4,12 @@
+ 
+ source magikos-pkg-backend
+ 
++# No AUR on Void/xbps; the base system update covers everything installed from
++# the Void repositories, so there is nothing separate to do here.
++if backend_is_xbps; then
++  exit 0
++fi
++
+ if pacman -Qem >/dev/null; then
+   if magikos-pkg-aur-accessible; then
+     echo -e "\e[32m\nUpdate AUR packages\e[0m"
+diff --git a/bin/magikos-update-available b/bin/magikos-update-available
+index cbd5d3ed..9ebd0f9a 100755
+--- a/bin/magikos-update-available
++++ b/bin/magikos-update-available
+@@ -4,6 +4,8 @@
+ 
+ set -euo pipefail
+ 
++source magikos-pkg-backend
++
+ updates=()
+ 
+ if [[ $MAGIKOS_PATH != "/usr/share/magikos" ]]; then
+@@ -21,9 +23,9 @@ if [[ $MAGIKOS_PATH != "/usr/share/magikos" ]]; then
+ fi
+ 
+ package=""
+-if pacman -Qq magikos-dev >/dev/null 2>&1; then
++if pkg_installed magikos-dev; then
+   package=magikos-dev
+-elif pacman -Qq magikos >/dev/null 2>&1; then
++elif pkg_installed magikos; then
+   package=magikos
+ fi
+ 
+diff --git a/bin/magikos-update-keyring b/bin/magikos-update-keyring
+index c726a46c..dedf1ca4 100755
+--- a/bin/magikos-update-keyring
++++ b/bin/magikos-update-keyring
+@@ -3,6 +3,15 @@
+ # magikos:summary=Ensure the Magikos and Arch keyring packages are installed and populated
+ # magikos:requires-sudo=true
+ 
++source "$(dirname "$(readlink -f "$0")")/magikos-pkg-backend"
++
++# Void/xbps port: pacman-key and archlinux-keyring are Arch constructs. Void
++# signs its repositories with RSA keys already trusted in /var/db/xbps, verified
++# by xbps itself on every transaction, so there is no keyring to populate here.
++if backend_is_xbps; then
++  exit 0
++fi
++
+ if magikos-pkg-missing magikos-keyring || ! sudo pacman-key --list-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571 &>/dev/null; then
+   sudo pacman-key --recv-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571 --keyserver keys.openpgp.org
+   sudo pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
+diff --git a/bin/magikos-update-orphan-pkgs b/bin/magikos-update-orphan-pkgs
+index 720280d4..0c4db1b0 100755
+--- a/bin/magikos-update-orphan-pkgs
++++ b/bin/magikos-update-orphan-pkgs
+@@ -7,7 +7,7 @@ set -e
+ 
+ source magikos-pkg-backend
+ 
+-mapfile -t orphans < <(pacman -Qtdq 2>/dev/null || true)
++mapfile -t orphans < <(pkg_list_orphans 2>/dev/null || true)
+ (( ${#orphans[@]} )) || exit 0
+ 
+ echo -e "\e[32m\nOrphan system packages\e[0m"
+@@ -27,5 +27,5 @@ if ! gum confirm --default=false "Remove ${#orphans[@]} orphaned package(s)?"; t
+ fi
+ 
+ echo -e "\e[32m\nRemoving orphan system packages\e[0m"
+-sudo pacman -Rns "${orphans[@]}"
++sudo "${PKG_REMOVE_CMD[@]}" "${orphans[@]}"
+ echo
+diff --git a/bin/magikos-update-pkg-prune b/bin/magikos-update-pkg-prune
+index 8d4db1d7..8022a8bf 100755
+--- a/bin/magikos-update-pkg-prune
++++ b/bin/magikos-update-pkg-prune
+@@ -9,5 +9,12 @@ set -e
+ # packages update and the installed version survives with a spare. paccache
+ # retains by version order, never by what is installed.
+ echo -e "\e[32m\nPrune package cache\e[0m"
+-sudo paccache -rk2 || echo -e "\e[33mCould not prune the package cache.\e[0m" >&2
++if command -v xbps-remove >/dev/null 2>&1; then
++  # xbps-remove -O drops superseded packages from the cache. Void keeps a spare
++  # only via the keep-old-pkgs XBPS_KEEPOLD_PKGS setting, so there is no
++  # equivalent of "retain by version order, two deep" here.
++  sudo xbps-remove -O || echo -e "\e[33mCould not prune the package cache.\e[0m" >&2
++else
++  sudo paccache -rk2 || echo -e "\e[33mCould not prune the package cache.\e[0m" >&2
++fi
+ echo
+diff --git a/bin/magikos-update-restart b/bin/magikos-update-restart
+index c591591b..68023b88 100755
+--- a/bin/magikos-update-restart
++++ b/bin/magikos-update-restart
+@@ -4,6 +4,8 @@
+ 
+ echo
+ 
++source "$(dirname "$(readlink -f "$0")")/magikos-pkg-backend"
++
+ confirm_reboot() {
+   gum confirm "$1" && { magikos-system-reboot; exit 0; }
+ }
+@@ -12,7 +14,7 @@ running_kernel=$(uname -r)
+ kernel_updated=true
+ 
+ for kernel in /usr/lib/modules/*/vmlinuz; do
+-  if [[ -f $kernel ]] && pacman -Qo "$kernel" &>/dev/null; then
++  if [[ -f $kernel ]] && pkg_owns_file "$kernel"; then
+     installed_kernel=$(basename "$(dirname "$kernel")")
+ 
+     if [[ $installed_kernel == $running_kernel ]]; then
+diff --git a/bin/magikos-update-system-pkgs b/bin/magikos-update-system-pkgs
+index 7590e054..35cf1703 100755
+--- a/bin/magikos-update-system-pkgs
++++ b/bin/magikos-update-system-pkgs
+@@ -7,6 +7,15 @@ set -e
+ 
+ source magikos-pkg-backend
+ 
++# Void/xbps port: the pacman path below, and the conflict handler it defers to,
++# both parse pacman's own error output. xbps reports conflicts differently and
++# has no equivalent unowned-file situation under /usr/share/magikos (this is a
++# source checkout, so nothing owns files there). Run the upgrade directly.
++if backend_is_xbps; then
++  echo -e "\e[32m\nUpdate system packages\e[0m"
++  exec sudo env MAGIKOS_UPDATE_XBPS=1 xbps-install -Suy
++fi
++
+ # The conflict handler's last resort: pacman puts its questions to the person
+ # running the update instead of answering them itself. Nothing here may capture
+ # a stream, because an upgrade without --noconfirm prompts on stderr. The
+diff --git a/bin/magikos-upload-log b/bin/magikos-upload-log
+index e07da7af..fe3624b8 100755
+--- a/bin/magikos-upload-log
++++ b/bin/magikos-upload-log
+@@ -127,9 +127,13 @@ installed|system-info)
+   {
+     echo ""
+     echo "========================================="
+-    echo "INSTALLED PACKAGES (pacman -Q)"
++    echo "INSTALLED PACKAGES"
+     echo "========================================="
+-    pacman -Q 2>/dev/null || echo "Failed to get package list"
++    if command -v xbps-query >/dev/null 2>&1; then
++      xbps-query -l 2>/dev/null || echo "Failed to get package list"
++    else
++      pacman -Q 2>/dev/null || echo "Failed to get package list"
++    fi
+   } >>"$TEMP_LOG"
+ 
+   if [[ ! -s $TEMP_LOG ]]; then
+diff --git a/bin/magikos-version b/bin/magikos-version
+index 65f91260..ed3c6d17 100755
+--- a/bin/magikos-version
++++ b/bin/magikos-version
+@@ -5,6 +5,8 @@
+ magikos_path=${MAGIKOS_PATH:-/usr/share/magikos}
+ magikos_path=${magikos_path%/}
+ 
++source "$(dirname "$(readlink -f "$0")")/magikos-pkg-backend"
++
+ if [[ $magikos_path != "/usr/share/magikos" ]]; then
+   hash=$(git -C "$magikos_path" rev-parse --short HEAD 2>/dev/null || true)
+ 
+@@ -19,7 +21,11 @@ fi
+ 
+ # The edge channel installs magikos-dev instead of magikos, so check both.
+ for package in magikos-dev magikos; do
+-  version=$(pacman -Q "$package" 2>/dev/null | awk '{ print $2 }')
++  if pkg_installed "$package"; then
++    version=$(xbps-query -p version "$package" 2>/dev/null | awk '{ print $2 }')
++  else
++    version=$(pacman -Q "$package" 2>/dev/null | awk '{ print $2 }')
++  fi
+   [[ -n $version ]] && break
+ done
+ 
+diff --git a/bin/magikos-version-channel b/bin/magikos-version-channel
+index 3812337c..2b2ec65d 100755
+--- a/bin/magikos-version-channel
++++ b/bin/magikos-version-channel
+@@ -2,6 +2,14 @@
+ 
+ # magikos:summary=Print the active Magikos mirror and package channel
+ 
++# Void/xbps port: the MagikOS stable/rc/edge channels are pacman repositories
++# configured in /etc/pacman.{conf,d/mirrorlist}. Neither file exists here, and
++# this deployment is a source checkout, so there is no channel to report.
++if ! command -v pacman >/dev/null 2>&1; then
++  echo "unknown"
++  exit 0
++fi
++
+ if grep -q "https://stable-mirror.magikos.org/" /etc/pacman.d/mirrorlist; then
+   mirror="stable"
+ elif grep -q "https://rc-mirror.magikos.org/" /etc/pacman.d/mirrorlist; then
+diff --git a/bin/magikos-version-pkgs b/bin/magikos-version-pkgs
+index 6cdfd941..1a93fe62 100755
+--- a/bin/magikos-version-pkgs
++++ b/bin/magikos-version-pkgs
+@@ -4,8 +4,25 @@
+ source magikos-pkg-backend
+ 
+ log="/var/log/pacman.log"
++# Void logs its transactions to /var/log/xbps.log when syslog-style logging is
++# on; fall back to the pkgdb mtime when neither log is present.
++if backend_is_xbps; then
++  log="/var/log/xbps.log"
++fi
++
+ if [[ -f "$log" ]]; then
+-  last=$(grep "upgraded" "$log" | tail -1 | sed -E 's/\[([^]]+)\].*/\1/')
++  if backend_is_xbps; then
++    last=$(grep -E 'upgrade|install' "$log" | tail -1 | sed -E 's/^\[?([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+).*/\1/')
++  else
++    last=$(grep "upgraded" "$log" | tail -1 | sed -E 's/\[([^]]+)\].*/\1/')
++  fi
++  [[ -n "$last" ]] && date -d "$last" "+%A, %B %d %Y at %H:%M" && exit 0
++fi
++
++# No usable log: the newest pkgdb entry is a decent proxy for last transaction.
++if backend_is_xbps; then
++  last=$(find /var/db/xbps -maxdepth 1 -name '*-*' -newermt '-1 year' -printf '%TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | sort | tail -1)
+   [[ -n "$last" ]] && date -d "$last" "+%A, %B %d %Y at %H:%M" && exit 0
+ fi
++
+ echo "unknown"
+diff --git a/shell/plugins/panels/dropbox/Service.qml b/shell/plugins/panels/dropbox/Service.qml
+index 3e3e878a..3998a6dd 100644
+--- a/shell/plugins/panels/dropbox/Service.qml
++++ b/shell/plugins/panels/dropbox/Service.qml
+@@ -128,7 +128,9 @@ Item {
+ 
+   function openFile(file) {
+     if (!file || !file.path) return
+-    Quickshell.execDetached(["uwsm-app", "--", "nautilus", "--select", fileUri(String(file.path))])
++    // Void/xbps port: nautilus is not in the Void repositories and uwsm-app is
++    // not installed, so open with thunar (which is) and drop the scope prefix.
++    Quickshell.execDetached(["thunar", fileUri(String(file.path))])
+   }
+ 
+   function fileUri(path) {
+diff --git a/shell/services/AppLibrary.qml b/shell/services/AppLibrary.qml
+index 6ab657fb..307b1951 100644
+--- a/shell/services/AppLibrary.qml
++++ b/shell/services/AppLibrary.qml
+@@ -82,7 +82,10 @@ Item {
+     // inherit wayland-wm@.service. Keeping gtk-launch as the desktop-entry
+     // resolver supports IDs with spaces and entries that UWSM rejects.
+     // Keep the .desktop suffix or ids like org.telegram.desktop won't resolve.
+-    Util.execDetached("uwsm-app -- gtk-launch " + Util.shellQuote(id + ".desktop"))
++    // Void/xbps port: UWSM is an Arch session-manager dependency that is not
++    // installed here, so fall back to a plain gtk-launch. The test runs inside
++    // the bash -lc string Util.execDetached executes, not in JS.
++    Util.execDetached("(command -v uwsm-app >/dev/null 2>&1 && echo 'uwsm-app -- gtk-launch' || echo 'gtk-launch') " + Util.shellQuote(id + ".desktop"))
+   }
+ 
+   function remove(desktopId, name) {
