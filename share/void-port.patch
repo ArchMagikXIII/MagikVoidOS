@@ -63,6 +63,35 @@ index bfc96bc0..21961a5a 100755
  EOF
  
  if [[ $PRINT_ONLY = "true" ]]; then
+diff --git a/bin/magikos-launch-shell b/bin/magikos-launch-shell
+index 4c627181..4052cf19 100755
+--- a/bin/magikos-launch-shell
++++ b/bin/magikos-launch-shell
+@@ -17,9 +17,22 @@
+ 
+ export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"
+ 
++# Upstream pipes the shell into systemd-cat so the event trail lands in the
++# journal. runit neither ships systemd-cat nor runs a syslog that reliably gets
++# logger's traffic, and without a fallback the launcher here dies instantly
++# and burns its relaunch budget: the bar never returns after a restart. Log to
++# the same user-state file the session autostart uses when systemd-cat is not
++# available, so restart-shell and login produce one identical trail.
++LOGFILE="${MAGIKOS_SHELL_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/magikos/quickshell.log}"
++
+ run_shell() {
+-  QS_DISABLE_FILE_WATCHER=1 QS_NO_RELOAD_POPUP=1 \
+-    systemd-cat -t magikos-shell -- quickshell -n -p "$MAGIKOS_PATH/shell" &
++  if command -v systemd-cat >/dev/null 2>&1; then
++    QS_DISABLE_FILE_WATCHER=1 QS_NO_RELOAD_POPUP=1 \
++      systemd-cat -t magikos-shell -- quickshell -n -p "$MAGIKOS_PATH/shell" &
++  else
++    QS_DISABLE_FILE_WATCHER=1 QS_NO_RELOAD_POPUP=1 \
++      quickshell -n -p "$MAGIKOS_PATH/shell" >>"$LOGFILE" 2>&1 &
++  fi
+   shell_pid=$!
+ 
+   local status
 diff --git a/bin/magikos-menu-images b/bin/magikos-menu-images
 index a730962b..a778ce0f 100755
 --- a/bin/magikos-menu-images
@@ -999,7 +1028,7 @@ index 3b28627a..b183127e 100644
 +# or use `prime-run` / `nvidia-offload` wrapper scripts.
 +set $WLR_DRM_DEVICES /dev/dri/card0
 diff --git a/shell/plugins/bar/widgets/Workspaces.qml b/shell/plugins/bar/widgets/Workspaces.qml
-index 0d00728c..104ac9c3 100644
+index 0d00728c..e40c306d 100644
 --- a/shell/plugins/bar/widgets/Workspaces.qml
 +++ b/shell/plugins/bar/widgets/Workspaces.qml
 @@ -91,7 +91,7 @@ BarWidget {
@@ -1007,7 +1036,7 @@ index 0d00728c..104ac9c3 100644
          useActiveColor: false
          opacity: 1
 -        fontSize: 12
-+        fontSize: 14
++        fontSize: 15
          horizontalMargin: 0
          verticalPadding: 0
          fixedWidth: root.vertical ? root.barSize : -1
