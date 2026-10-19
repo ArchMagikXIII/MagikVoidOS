@@ -467,7 +467,9 @@ echo "=== $(date) ==="
 
 if swapon --show=NAME --noheadings 2>/dev/null | grep -qw /dev/zram0; then
     echo "zram0 already active"
-    exit 0
+    # Keep the service up anyway: an exiting run makes runsv run finish,
+    # whose swapoff would undo the very thing this service is for.
+    exec sleep infinity
 fi
 
 if [ ! -d /sys/block/zram0 ]; then
@@ -488,6 +490,14 @@ fi
 mkswap /dev/zram0
 swapon -p 100 /dev/zram0
 echo "zram0 active: $(cat /sys/block/zram0/disksize) bytes, zstd, priority 100"
+
+# Stay running. runsv runs ./finish whenever ./run exits, and finish does the
+# swapoff -- so a run-once script was a perfect undo loop: swapon, exit,
+# finish swapoff, restart, mkswap again... forever, with swap never on when
+# anything checked. Sleeping here keeps the service up, so finish executes
+# only on a real `sv down/restart`, which is exactly the window where swap
+# should be removed.
+exec sleep infinity
 EOF
 }
 
