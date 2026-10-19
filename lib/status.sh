@@ -496,24 +496,40 @@ chk_shell_log() {
         echo "skip no log yet (appears after you log into Sway)"
         return 0
     fi
+# The log is append-only, so errors from an earlier run stay in the file
+    # forever. Grepping all of it means a single crash makes this check FAIL
+    # permanently even after the cause is fixed and the shell is healthy, which
+    # is exactly the "I fixed it and it still says broken" trap. Scope to the
+    # current run: everything since the last shell start.
+    local cur last
+    cur="$(mktemp)"
+    last="$(grep -an 'Launching config:' "$f" 2>/dev/null | tail -1 | cut -d: -f1)"
+    if [[ $last =~ ^[0-9]+$ ]]; then
+        tail -n "+$last" "$f" >"$cur" 2>/dev/null
+    else
+        cp "$f" "$cur" 2>/dev/null
+    fi
+
     # Count with grep -c and normalise: `grep -c` prints "0" but exits 1 when
-    # there are no matches, so `|| echo 0` appends a second line and yields the
-    # literal "0\n0", which then breaks arithmetic expansion.
+    # there are no matches, so `|| echo 0` appends a second line and yields
+    # the literal "0\n0", which then breaks arithmetic expansion.
     local errs
-    errs="$(grep -ac 'ERROR' "$f" 2>/dev/null)" || errs=0
+    errs="$(grep -ac 'ERROR' "$cur" 2>/dev/null)" || errs=0
     [[ $errs =~ ^[0-9]+$ ]] || errs=0
-    if ((errs == 0)); then return 0; fi
+    if ((errs == 0)); then rm -f "$cur"; return 0; fi
 
     # A pipewire error is expected on a host with no audio sink, and is not a
     # Quickshell configuration problem. MESA/GL errors belong to the graphics
     # check, not here.
     local nonpipe
-    nonpipe="$(grep -a 'ERROR' "$f" 2>/dev/null | grep -avcE 'pipewire|MESA')" || nonpipe=0
+    nonpipe="$(grep -a 'ERROR' "$cur" 2>/dev/null | grep -avcE 'pipewire|MESA')" || nonpipe=0
     [[ $nonpipe =~ ^[0-9]+$ ]] || nonpipe=0
     if ((nonpipe > 0)); then
-        CHECK_HINT="$nonpipe real ERROR line(s) in $f"$'\n'"$(grep -a ERROR "$f" | grep -avE 'pipewire|MESA' | head -3 | sed 's/^/          /')"
+        CHECK_HINT="$nonpipe real ERROR line(s) since the current shell start"$'\n'"$(grep -a ERROR "$cur" | grep -avE 'pipewire|MESA' | head -3 | sed 's/^/          /')"
+        rm -f "$cur"
         return 1
     fi
+    rm -f "$cur"
     _c_warn "only the expected no-audio pipewire error in $f"
     return 0
 }
