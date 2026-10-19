@@ -224,6 +224,23 @@ a host with no audio.
   before it". `reconcile_desktop_gettys` (and `scripts/fix-desktop-gettys`)
   disables `agetty-tty1` and cleans the live-image autologin keys, which name a
   user that does not exist and autologin into xfce rather than sway.
+- **There is no systemd at all, so all 101 `systemctl` calls fail.** Void runs
+  runit as PID 1 and does not even install the `systemctl` binary. The MagikOS
+  tree makes 101 calls across 42 files, 46 of them `--user`. Nearly every one
+  is `2>/dev/null`-guarded, so nothing is reported and the affected feature
+  silently does nothing. `lib/shims.sh` shims `systemctl` rather than editing
+  42 files, and the shim holds two rules: it execs the *real* systemctl whenever
+  `/run/systemd/system` exists (it sits first on PATH, so otherwise it would
+  shadow systemd forever on a host that installs it later), and it never invents
+  success. `--user` has no runit equivalent, so those calls keep failing with a
+  stated reason instead of silence.
+- **runit state is root-only, so an unprivileged `is-active` must say unknown.**
+  Void keeps per-service state in `/run/runit/supervise.<name>`, mode 0700
+  root, so `sv status` fails for *every* service when called as the user --
+  including running ones. The shim reports systemd's exit 4 (unknown) rather
+  than 3 (inactive); collapsing them would report a live service as stopped.
+  `/var/service` *is* world-readable, so `is-enabled` stays genuinely answerable
+  without privilege.
 - **A Quickshell agent's own "registered" log line proves nothing.** polkit
   reported no available agent while Quickshell cheerfully logged
   `polkit agent registered`. Before blaming the agent, check the session the
