@@ -135,6 +135,14 @@ a host with no audio.
 
 ## Gotchas discovered the hard way
 
+- **`ls dir/*.ttf dir/*.otf` exits non-zero when either glob matches
+  nothing.** The Nerd Font zip ships TTF only, so 96 files extracted correctly
+  and the step then reported "no font files extracted" and failed. Count with
+  `find ... \( -name '*.ttf' -o -name '*.otf' \) | wc -l`.
+- **An ignored `_c` return value reports success that did not happen.** The
+  Brave install did `_c sudo cp ...` and `_c sudo xbps-install ...`, checked
+  neither, then printed "installed". Check the status, and verify the artefact
+  on disk (`[[ -x $BRAVE_PREFIX/brave ]]`) rather than trusting the exit code.
 - **`grep -c` prints 0 and exits 1 when there are no matches**, so
   `n="$(grep -c x f || echo 0)"` yields the two-line string `0\n0` and blows
   up arithmetic expansion. Use `n="$(grep -c x f)" || n=0`.

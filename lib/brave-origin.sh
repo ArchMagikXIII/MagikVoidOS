@@ -271,12 +271,33 @@ brave_build() {
         else
             ensure_sudo || return 1
             log "Installing to /"
-            _c sudo cp -a "$stage/." /
-            _c sudo xbps-uhelper getopt >/dev/null 2>&1 || true
-            # Register with xbps so removals/upgrades are tracked.
-            _c sudo xbps-install -y "$xbpkg" 2>/dev/null \
-                || warn "could not register package metadata; files installed anyway"
-            ok "brave-origin $BRAVE_VERSION installed"
+            # Check the exit status. `_c sudo cp ...` with an ignored status
+            # printed "installed" even when the copy never happened, and the
+            # failure only surfaced much later as a confusing --status FAIL.
+            if ! _c sudo cp -a "$stage/." /; then
+                err "could not copy the payload to /"
+                err "  check free space and permissions on /opt, then retry"
+                return 1
+            fi
+
+            # The real success criterion is the installed tree, not the copy's
+            # exit status. Verify what is actually on disk now.
+            if [[ ! -x "$BRAVE_PREFIX/brave" ]]; then
+                err "payload copied but $BRAVE_PREFIX/brave is missing"
+                err "  /opt contains: $(ls /opt 2>/dev/null | tr '\n' ' ')"
+                return 1
+            fi
+            ok "payload installed at $BRAVE_PREFIX"
+
+            # Register with xbps so removals/upgrades are tracked. Best effort:
+            # a metadata failure must not undo a working install, but it should
+            # be visible rather than hidden behind 2>/dev/null.
+            if _c sudo xbps-install -y "$xbpkg"; then
+                ok "registered with xbps"
+            else
+                warn "could not register package metadata; files are installed and usable"
+                warn "  retry registration with: sudo xbps-install -y $xbpkg"
+            fi
         fi
     else
         _c cp -a "$stage" "$w/staged"
