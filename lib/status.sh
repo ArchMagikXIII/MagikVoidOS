@@ -739,6 +739,35 @@ chk_zram() {
     return 1
 }
 
+# Audio on Void: no systemd user session exists to socket-activate pipewire,
+# so unless the Sway session exec's the daemons themselves, the whole system
+# is silently without sound: wpctl answers "Could not connect to PipeWire",
+# volume keys change nothing, and the quickshell.log pipewire ERROR is easy
+# to rationalise as "expected". Check all three layers: daemons running,
+# and (inside a session) a default sink actually chosen.
+chk_audio() {
+    local missing=()
+    pgrep -x pipewire >/dev/null 2>&1 || missing+=("pipewire")
+    pgrep -x wireplumber >/dev/null 2>&1 || missing+=("wireplumber")
+    pgrep -f 'pipewire[-]pulse' >/dev/null 2>&1 || missing+=("pipewire-pulse")
+    if ((${#missing[@]})); then
+        CHECK_HINT="not running: ${missing[*]}"$'\n'"Void has no user session manager to start these -- audio is permanently silent without them"$'\n'"fix now, in this session:"$'\n'"    swaymsg exec pipewire ; swaymsg exec wireplumber"$'\n'"fix permanently: ./install.sh --no-packages   # adds the exec lines to the sway autostart"
+        return 1
+    fi
+    if have wpctl; then
+        local sink
+        sink="$(wpctl status 2>/dev/null | awk '/Sinks:/,/Sources:/' | grep -m1 '\*\s')"
+        if [[ -z $sink ]]; then
+            # Daemons up but no sink: VIDEO/AHCI fine, degenerate config.
+            CHECK_HINT="pipewire + wireplumber run, but no default sink is chosen"$'\n'"the volume keys change nothing without one"$'\n'"fix now: wpctl status   # find the sink id, then: wpctl set-default <id>"
+            return 1
+        fi
+        note "default sink: $(printf '%s' "$sink" | sed 's/^ *//')"
+        return 0
+    fi
+    return 0
+}
+
 # --- report -----------------------------------------------------------------
 
 status_report() {
@@ -777,6 +806,7 @@ check "launch shims (uwsm/systemd-run/systemctl)" chk_launch_shims
     check "MAGIKOS_PATH in ~/.profile"   chk_env
     check "Quickshell log clean"         chk_shell_log
     check "sway session running"         chk_sway_session
+    check "session audio (pipewire) "    chk_audio
 
     printf '\n\033[1m  Gaming (optional)\033[0m\n'
     # Show the gaming section when gaming was requested, or when it looks

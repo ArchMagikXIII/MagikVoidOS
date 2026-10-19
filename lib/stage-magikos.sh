@@ -146,6 +146,42 @@ EOF
         fi
     fi
 
+    # 3c. Void has no systemd user session. Upstream relies on systemd user
+    #     units to socket-activate pipewire/pipewire-pulse/wireplumber, and
+    #     those calls are exactly the dead `systemctl --user` ones. Nothing
+    #     else starts them, so audio NEVER exists on this port: every `wpctl`
+    #     call answers "Could not connect to PipeWire" and the volume keys
+    #     change nothing. Start the daemons with the session instead.
+    #
+    #     pipewire + pipewire-pulse run exec-always WITHOUT a guard: a second
+    #     instance refuses to bind the sockets and exits, so reloads cannot
+    #     stack them. wireplumber runs guarded: pgrep -x matches the exact
+    #     process name and not the sh -c cmdline that contains the word, and
+    #     two wireplumbers fight until the default sink disappears. The block
+    #     is rebuilt wholesale on every run (awk keeps everything before the
+    #     marker, then the fresh block is appended), so an older version of
+    #     the block is upgraded for free instead of accumulated.
+    if [[ -f $dir/autostart.conf ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+            printf '  \033[2mplan\033[0m  add pipewire/wireplumber exec lines to %s\n' \
+                "$dir/autostart.conf"
+        else
+            awk '/magikos-void: session audio/{exit} {print}' \
+                "$dir/autostart.conf" > "$dir/autostart.conf.tmp" &&
+                mv "$dir/autostart.conf.tmp" "$dir/autostart.conf"
+            tee -a "$dir/autostart.conf" >/dev/null <<'EOF'
+
+# magikos-void: session audio. Void has no systemd user session, which is
+# what upstream relies on to start these binaries automatically. Without
+# them in the session, PipeWire never runs and the system is permanently
+# silent (wpctl: "Could not connect to PipeWire").
+exec_always pipewire
+exec_always pipewire-pulse
+exec_always sh -c "pgrep -x wireplumber >/dev/null || wireplumber >/dev/null 2>&1"
+EOF
+        fi
+    fi
+
     # 4. Wallpaper must exist locally, else swaybg blanks the output. Create
     #    the parent dir if we can, but do NOT fabricate an image: an empty
     #    file would make swaybg fail worse than a missing one.
