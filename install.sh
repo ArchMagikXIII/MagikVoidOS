@@ -26,6 +26,8 @@ source "$SELF_DIR/lib/packages.sh"
 source "$SELF_DIR/lib/stage-magikos.sh"
 # shellcheck source=lib/fonts.sh
 source "$SELF_DIR/lib/fonts.sh"
+
+source "$SELF_DIR/lib/shims.sh"
 # shellcheck source=lib/brave-origin.sh
 source "$SELF_DIR/lib/brave-origin.sh"
 # shellcheck source=lib/status.sh
@@ -191,11 +193,25 @@ main() {
     if ((DO_BRAVE)); then
         if ! brave_build; then
             warn "Brave Origin build failed (MagikOS still works without it)"
-            warn "retry later with: sudo ./scripts/build-brave-origin"
+            warn "retry later with: $SELF_DIR/scripts/build-brave-origin"
         fi
     else
         ok "skipped (--skip-brave)"
     fi
+
+    # Neither uwsm-app nor systemd-run exists on Void, yet 26 magikos-*
+    # scripts launch apps through uwsm-app and 6 more use systemd-run. Without
+    # these the desktop launches nothing. Installed late because they write into
+    # $MAGIKOS_HOME/bin, which stage_all owns.
+    if ! install_launch_shims; then
+        warn "launch shims missing; apps will not start from the menu"
+        rc=1
+    fi
+
+    # No theme means no backgrounds and an empty theme picker: both pickers
+    # read from theme state, so an unset theme looks like a broken picker
+    # rather than a missing one. Set one unless the user already chose.
+    ensure_default_theme
 
     # Always show the status report: it is the answer to "did this work?".
     if ((DO_BRAVE)) || [[ -x $BRAVE_PREFIX/brave ]]; then BRAVE_OPTIONAL=1; fi

@@ -17,6 +17,7 @@ install.sh                  entry point (idempotent, sudo-aware, --dry-run/--sta
 lib/common.sh               logging, Void detection, sudo, ensure_dir/ensure_paths
 lib/packages.sh             curated Void package set (replaces magikos-base.packages)
 lib/fonts.sh                Nerd Font install + fontconfig alias for bar glyphs
+lib/shims.sh                uwsm-app/systemd-run substitutes + default theme
 lib/stage-magikos.sh        clone upstream, apply port patch, patch sway, set env
 lib/status.sh               the checks behind `install.sh --status`
 lib/brave-origin.sh         build Brave Origin as a native Void package
@@ -244,6 +245,96 @@ a Chromium build wants far more). Repackaging needs only curl + python3.
 The sandbox works via unprivileged user namespaces on this host
 (`max_user_namespaces = 31630`), so `chrome-sandbox` does not need setuid.
 
+## App launching: uwsm-app and systemd-run do not exist on Void
+
+**This is the "apps are launching but nothing happened" bug.** 26 `magikos-*`
+scripts launch apps through `uwsm-app -- <cmd>`, and 6 more use `systemd-run
+--user ... --scope`. Void uses runit: no `systemd-run`, and no `uwsm` package.
+Every one of those call sites is backgrounded with `>/dev/null 2>&1 &`, so the
+failure is discarded and the shell just reports "launching X".
+
+Confirmed on the default line of `magikos-launch-or-focus` (`bin/magikos-launch-or-focus:20`):
+
+```
+setsid: failed to execute uwsm-app: No such file or directory
+```
+
+Upstream is not at fault and there is no file to copy. `uwsm-app` comes from
+Arch's `uwsm` package and `systemd-run` from systemd itself; neither is in the
+MagikOS git tree:
+
+```
+git ls-files -s | awk '$1=="100755"' | grep -E 'uwsm|systemd-run'   # empty
+```
+
+Upstream *does* ship `default/uwsm/`, but that is session config: a shell
+snippet `default/uwsm/env.d/10-magikos` that the uwsm daemon sources when it
+starts apps. Without uwsm nothing sources it. `default/systemd/user/*.service`
+is dead for the same reason -- 8 units never run, including
+`magikos-fcitx5.service`, so **fcitx5 never starts** and XCompose CapsLock
+sequences do nothing. Those units are still unported.
+
+`lib/shims.sh` installs `uwsm-app` and `systemd-run` into `$MAGIKOS_HOME/bin`,
+which `environment.conf` already puts on PATH, so all 32 call sites are fixed
+without touching upstream. What those tools provide is process *scoping*; with
+no user systemd there is no unit to join, so `setsid` is a faithful substitute
+rather than a stub. Both the immediate (`--scope`) and `--on-active=N` timer
+forms are handled. `chk_launch_shims` verifies they exist **and** that PATH
+resolves to ours -- a shim shadowed further down PATH fails exactly as badly as
+no shim.
+
+Note `jq` is bundled at `$MAGIKOS_HOME/bin/jq`, not system-wide, so do not
+"clean up" PATH by removing that directory while testing: `jq`-based scripts
+fail first and mask the thing being tested.
+
+## Pickers need a theme
+
+The wallpaper and theme pickers were never broken. Both read from theme state:
+
+- `shell/plugins/background/Background.qml:113` runs `magikos-theme-bg-switcher`
+- `shell/plugins/background/Background.qml:119` runs `magikos-theme-switcher`
+- both shell out to `magikos-menu-images`, which drives the picker over
+  `magikos-shell image-selector` IPC (that IPC works fine)
+
+MagikOS ships 22 themes but installs **none**. With `theme.name` missing,
+`~/.local/state/magikos/current/theme/backgrounds` does not exist, so the
+wallpaper picker opens with 0 rows and the theme picker looks inert. The
+symptom reads as "broken picker" rather than "no theme chosen yet".
+`ensure_default_theme` applies `catppuccin` (overridable with
+`MAGIKOS_DEFAULT_THEME`) and never overrides an existing choice; `chk_theme`
+detects the empty case.
+
+Verify with `cat ~/.local/state/magikos/current/theme.name` and
+`ls ~/.local/state/magikos/current/theme/backgrounds | wc -l` (expect > 0).
+
+### Qt6 cannot decode the .webp backgrounds without a plugin
+
+All 22 themes ship their backgrounds as `.webp`, and Qt6 decodes WebP through a
+*plugin*. Void's `qt6-base` installs only gif/ico/jpeg/svg:
+
+```
+ls /usr/lib/qt6/plugins/imageformats/   # libqgif libqico libqjpeg libqsvg
+```
+
+so `Background.qml` logs, repeatedly and then around a crash:
+
+```
+WARN scene: QML QQuickImage at .../plugins/background/Background.qml[263:9]:
+     Error decoding: file:///.../background-transitions/next-*.webp:
+     Unsupported image format
+```
+
+The picker lists the images and selection appears to succeed, but nothing ever
+paints -- so a second, independent reason the wallpaper picker looks broken.
+`qt6-imageformats` provides `imageformats/libqwebp.so` and is now in
+`lib/packages.sh`. `chk_qt_webp` checks for the plugin rather than decoding a
+file, because a broken or missing plugin still *lists* the file fine.
+
+Note `chk_shell_log` counts the single `Quickshell has crashed` line as a FAIL
+even though the shell auto-restarts; that is intentional. One crash was seen
+while switching themes with the WebP plugin missing, but it has not reproduced
+in a loop, so treat it as a lead, not an established cause.
+
 ## Shell fonts
 
 The bar draws Nerd Font codepoints using the *default* Qt family:
@@ -398,7 +489,9 @@ git -C ~/magikos-void rebase --root --exec \
       git-only; xbps updates are invisible to it)
 - [ ] Audit the 64 migrations, or gate them behind an explicit opt-in
 - [ ] Fix the five upstream `bash -n` failures (propose upstream)
-- [ ] Decide on UWSM: install it for real app scoping, or drop the systemd unit
+- [x] Decide on UWSM: shimmed `uwsm-app`/`systemd-run` in `lib/shims.sh` (Void cannot
+      run uwsm, which requires systemd); 8 `default/systemd/user/*.service`
+      units remain dead, incl. `magikos-fcitx5.service`
 - [ ] Ship an ISO image, mirroring upstream `iso/`
 
 ### Open questions
