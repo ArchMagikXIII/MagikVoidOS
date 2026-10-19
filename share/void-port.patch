@@ -846,6 +846,171 @@ index 6cdfd941..1a93fe62 100755
  fi
 +
  echo "unknown"
+diff --git a/bin/uwsm-app b/bin/uwsm-app
+index b11da513..9b4f85ac 100755
+--- a/bin/uwsm-app
++++ b/bin/uwsm-app
+@@ -1,11 +1,11 @@
+-#!/bin/bash
+-# Keep the existing UWSM app scope on systemd; direct Sway has no user manager.
+-if [[ ${MAGIKOS_FORCE_DIRECT_LAUNCH:-0} != 1 && -d /run/systemd/system && -x /usr/bin/uwsm-app ]]; then
+-  exec /usr/bin/uwsm-app "$@"
++#!/usr/bin/env bash
++# MagikOS Void port: uwsm-app shim.
++# UWsm scopes a launched app to a systemd user unit. Void has no user systemd,
++# so there is no unit to join; launch detached with setsid instead.
++set -uo pipefail
++[[ ${1:-} == "--" ]] && shift
++if (($# == 0)); then
++    echo "uwsm-app(shim): no command given" >&2
++    exit 1
+ fi
+-if [[ ${1:-} != -- || $# -lt 2 ]]; then
+-  echo "Usage: uwsm-app -- COMMAND [ARG ...]" >&2
+-  exit 2
+-fi
+-shift
+-exec "$@"
++exec setsid "$@"
+diff --git a/config/sway/appearance.conf b/config/sway/appearance.conf
+index fe32070d..a1067497 100644
+--- a/config/sway/appearance.conf
++++ b/config/sway/appearance.conf
+@@ -8,7 +8,7 @@
+ # ~/Pictures/Wallpapers, so this resolves on a provisioned account. If you
+ # delete or move the image, swap in the solid_color line below rather than
+ # leaving the path dangling.
+-output * bg ~/Pictures/Wallpapers/Osaka.jpg fill
++output * bg /home/magikxiii/Pictures/Wallpapers/Cityscape.jpg fill
+ # output * bg #1e1e2e solid_color
+ 
+ # Remove old i3-style title bars
+diff --git a/config/sway/autostart.conf b/config/sway/autostart.conf
+index 2f5e53a3..19dde526 100644
+--- a/config/sway/autostart.conf
++++ b/config/sway/autostart.conf
+@@ -12,6 +12,16 @@
+ # QuickShell is the only bar; it launches below. Its log is kept in
+ # ~/.local/state/magikos/quickshell.log so a bar that fails to come up can
+ # always be diagnosed after the fact.
+-exec_always bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$HOME/.local/bin:$PATH"; mkdir -p "$HOME/.local/state/magikos"; { systemctl --user import-environment MAGIKOS_PATH PATH 2>/dev/null; systemctl --user restart wayland-wm-app-daemon.service 2>/dev/null; exec /usr/bin/quickshell -p "$MAGIKOS_PATH/shell"; } >>"$HOME/.local/state/magikos/quickshell.log" 2>&1'
++exec_always bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$HOME/.local/bin:$PATH"; mkdir -p "$HOME/.local/state/magikos"; { systemctl --user import-environment MAGIKOS_PATH PATH 2>/dev/null; systemctl --user restart wayland-wm-app-daemon.service 2>/dev/null; exec /usr/bin/quickshell -p "$MAGIKOS_PATH/shell"; } >>"$HOME/.local/state/magikos/quickshell.log" 2>&1'
+ 
+ exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
++
++
++
++# magikos-void: session audio. Void has no systemd user session, which is
++# what upstream relies on to start these binaries automatically. Without
++# them in the session, PipeWire never runs and the system is permanently
++# silent (wpctl: "Could not connect to PipeWire").
++exec_always pipewire
++exec_always pipewire-pulse
++exec_always sh -c "pgrep -x wireplumber >/dev/null || wireplumber >/dev/null 2>&1"
+diff --git a/config/sway/bindings.conf b/config/sway/bindings.conf
+index 213d2b61..3caf4b43 100644
+--- a/config/sway/bindings.conf
++++ b/config/sway/bindings.conf
+@@ -2,53 +2,53 @@
+ # 1. LAUNCHERS & SYSTEM CONTROL
+ # ------------------------------------------------------------------------------
+ # MagikOS Menu (Super + Space)
+-bindsym $mod+Space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle'
++bindsym $mod+Space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle'
+ 
+ # Keybindings Menu (Super + K)
+-bindsym $mod+k exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu-keybindings'
++bindsym $mod+k exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu-keybindings'
+ 
+ # Apps Menu (Alt + Space)
+-bindsym Mod1+Space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle apps'
++bindsym Mod1+Space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle apps'
+ 
+ # Clipboard History (Super + Alt + V)
+-bindsym $mod+Mod1+v exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-shell shell toggle magikos.clipboard'
++bindsym $mod+Mod1+v exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-shell shell toggle magikos.clipboard'
+ 
+ # Theme Picker (Alt + Ctrl + Shift + T)
+-bindsym Mod1+Ctrl+Shift+t exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle style.theme'
++bindsym Mod1+Ctrl+Shift+t exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle style.theme'
+ 
+ # System / Power Menu (Super + Escape)
+-bindsym $mod+Escape exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle system'
++bindsym $mod+Escape exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle system'
+ 
+ # Lock Computer (Super + Ctrl + L)
+ bindsym $mod+Ctrl+l exec swaylock -f -c 000000
+ 
+ # Toggle Menu (Super + Ctrl + O)
+-bindsym $mod+Ctrl+o exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle trigger.toggle'
++bindsym $mod+Ctrl+o exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle trigger.toggle'
+ 
+ # --- TOGGLE MODES ---
+ # Night Light (Super + Ctrl + N)
+-bindsym $mod+Ctrl+n exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-nightlight'
++bindsym $mod+Ctrl+n exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-nightlight'
+ 
+ # Silence Notifications (Super + Ctrl + ,)
+-bindsym $mod+Ctrl+comma exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-notification-silencing'
++bindsym $mod+Ctrl+comma exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-notification-silencing'
+ 
+ # Stay Awake (Idle Lock Disabled) (Super + Ctrl + I)
+-bindsym $mod+Ctrl+i exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-idle'
++bindsym $mod+Ctrl+i exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-idle'
+ 
+ # Top Bar (Super + Shift + Space)
+-bindsym $mod+Shift+space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-bar'
++bindsym $mod+Shift+space exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-bar'
+ 
+ # --- HARDWARE MENUS & TOGGLES ---
+ # Hardware Menu (Super + Ctrl + H)
+-bindsym $mod+Ctrl+h exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle trigger.hardware'
++bindsym $mod+Ctrl+h exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-menu toggle trigger.hardware'
+ 
+ # Touchpad (XF86TouchpadToggle)
+-bindsym XF86TouchpadToggle exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-touchpad'
++bindsym XF86TouchpadToggle exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-toggle-touchpad'
+ 
+ # Dictation (Voxtype) - Hold F9 to dictate / Super + Ctrl + X to toggle
+-bindsym F9 exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle start'
+-bindsym --release F9 exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle stop'
+-bindsym $mod+Ctrl+x exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-/usr/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle toggle'
++bindsym F9 exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle start'
++bindsym --release F9 exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle stop'
++bindsym $mod+Ctrl+x exec bash -c 'export MAGIKOS_PATH="${MAGIKOS_PATH:-$HOME/.local/share/magikos}"; export PATH="$MAGIKOS_PATH/bin:$PATH"; exec magikos-voxtype-toggle toggle'
+ 
+ # Terminal Launcher
+ bindsym $mod+Return exec foot
+diff --git a/config/sway/environment.conf b/config/sway/environment.conf
+index 3b28627a..b183127e 100644
+--- a/config/sway/environment.conf
++++ b/config/sway/environment.conf
+@@ -6,5 +6,10 @@
+ # packaged tree location; plain sway sessions (ly -> sway.desktop) bypass uwsm,
+ # so session code cannot assume MAGIKOS_PATH is present in the environment.
+ # Dev checkouts override this file in ~/.config/sway/environment.conf.
+-set $MAGIKOS_PATH /usr/share/magikos
+-set $PATH /usr/share/magikos/bin:$HOME/.local/bin:$PATH
++set $MAGIKOS_PATH $HOME/.local/share/magikos
++set $PATH $HOME/.local/share/magikos/bin:$HOME/.local/bin:$PATH
++
++# AMD iGPU drives the display (card0 = Radeon Renoir, eDP-1).
++# NVIDIA dGPU is Prime-offload only: launch apps with `DRI_PRIME=1 <app>`
++# or use `prime-run` / `nvidia-offload` wrapper scripts.
++set $WLR_DRM_DEVICES /dev/dri/card0
+diff --git a/shell/plugins/bar/widgets/Workspaces.qml b/shell/plugins/bar/widgets/Workspaces.qml
+index 0d00728c..104ac9c3 100644
+--- a/shell/plugins/bar/widgets/Workspaces.qml
++++ b/shell/plugins/bar/widgets/Workspaces.qml
+@@ -91,7 +91,7 @@ BarWidget {
+         foreground: focused ? wsCol : (occupied ? Color.muted : Color.foreground)
+         useActiveColor: false
+         opacity: 1
+-        fontSize: 12
++        fontSize: 14
+         horizontalMargin: 0
+         verticalPadding: 0
+         fixedWidth: root.vertical ? root.barSize : -1
 diff --git a/shell/plugins/panels/dropbox/Service.qml b/shell/plugins/panels/dropbox/Service.qml
 index 3e3e878a..3998a6dd 100644
 --- a/shell/plugins/panels/dropbox/Service.qml
