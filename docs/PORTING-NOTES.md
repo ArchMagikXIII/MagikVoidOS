@@ -113,3 +113,48 @@ of 28 was a miscount.
 See the "Deliberately not ported" section of `AGENTS.md`. Summary: AUR,
 `magikos-reinstall-pkgs`, `magikos-migrate`, adaptive tiling, and the local
 `pacman -U` branch in `magikos-dev-pkg-test`.
+
+## kitty recompiles its entire Python tree on every launch
+
+2026-10-20. The report: "apps take 1-3 s to open from keybinds or the menu".
+Anchored measurements against the live compositor showed a fixed ~0.92 s
+exec -> window-visible for kitty, on top of any app's own real work.
+
+Ruled out in order: launch wrapper (`bash -lc` 40 ms), dynamic loader
+(`LD_DEBUG=statistics`: microseconds), Mesa shader cache, fontconfig (11 ms
+fc-match), EGL/GL bootstrap (55-80 ms with a C probe), CPU frequency ramp,
+page-cache/swap IO. The delay was pure single-threaded *userspace CPU inside
+the client* before its first Wayland operation -- invisible to an
+open/dlopen interposer because there was no I/O in the window at all.
+
+An unprivileged ptrace RIP sampler (`PTRACE_ATTACH` cycles when `/proc` state
+is R; needs no `gdb`/`strace`/root) resolved the spins to `libpython3.14`, and
+`PYTHONPROFILEIMPORTTIME=1` named the bill:
+
+```
+import time:   8062 |    814047 | kitty.main        cumulative us
+```
+
+kitty launches its embedded Python with `Py_OptimizeFlag=2`, but Void's kitty
+package ships only `*.pyc` and `*.opt-1.pyc` (zero `*.opt-2.pyc`), and
+`/usr/lib/kitty` is root-owned, so the `.opt-2.pyc` CPython wants to have
+cannot be created by a user session. Every launch recompiled ~180 modules
+from source. Reproduced against plain CPython: `python3 -OO -c 'import
+kitty.main'` = 0.837 s vs 0.124 s at level 0. Upstream-repo reference: on a
+distro whose packaging compiles `-OO` bytecode kitty sits at ~0.15 s.
+
+Fix (user-land, no root, in `lib/shims.sh`):
+
+- a `kitty` shim in `$MAGIKOS_HOME/bin` that exports
+  `PYTHONPYCACHEPREFIX=$HOME/.cache/magikos/kitty-pyc2` unless the system
+  already has `*.opt-2.pyc` (then it execs the real binary untouched);
+- `ensure_kitty_pycache` prebuilds the opt-2 cache into that prefix at
+  install time (`python3 -OO -m compileall`), so even the first launch is fast;
+- after a kitty package update the cache self-heals: CPython re-derives the
+  cached path from the source mtime and rewrites it in the user prefix.
+
+Verified post-fix: Super+Return ink -> window: 0.92 s -> 0.14 s (3 runs:
+0.154 / 0.135 / 0.142). Brave and other non-Python clients never had this
+bug; their launch cost is their own. The equivalent permanent packaging fix
+is `sudo python3 -OO -m compileall /usr/lib/kitty`, which the status hint
+also offers; then the shim is inert by design.

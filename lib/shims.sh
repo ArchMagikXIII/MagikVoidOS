@@ -359,29 +359,121 @@ esac
 SHIM
 }
 
+# kitty [args...]
+#
+# kitty launches its embedded Python at optimization level 2 (Py_OptimizeFlag=2),
+# but Void's kitty package ships no *.cpython-314.opt-2.pyc and /usr/lib/kitty is
+# root-owned, so CPython recompiles ~180 modules of kitty's Python tree FROM
+# SOURCE ON EVERY LAUNCH: ~0.8 s of single-threaded CPU before the first frame.
+# Measured on this host: Super+Return -> visible window 0.92 s; with a working
+# opt-2 cache, 0.14 s. This is the "apps are slow to open" bug on the port.
+#
+# Two ways to be fast, checked in order:
+#   1. a system-wide cache (someone ran `sudo python3 -OO -m compileall ...`),
+#      in which case the real kitty is execed untouched;
+#   2. a user-writable bytecode cache via PYTHONPYCACHEPREFIX, which is exactly
+#      CPython's own mechanism -- stale entries self-heal after a kitty update
+#      because python re-derives the cached filename from the source mtime.
+write_kitty_shim() {
+    cat <<'SHIM'
+#!/usr/bin/env bash
+# MagikVoidOS port: kitty shim. See lib/shims.sh for why.
+set -uo pipefail
+
+# Electron-style launcher clutter is not our concern; pass everything through.
+# Skip the redirection entirely once the system cache exists, so the shim is
+# inert on hosts where the packaging fix landed.
+if ls /usr/lib/kitty/kitty/__pycache__/*.opt-2.pyc >/dev/null 2>&1; then
+    exec /usr/bin/kitty "$@"
+fi
+
+PYTHONPYCACHEPREFIX="${MAGIKOS_KITTY_PYCACHE:-$HOME/.cache/magikos/kitty-pyc2}"
+export PYTHONPYCACHEPREFIX
+exec /usr/bin/kitty "$@"
+SHIM
+}
+
+# Prebuild the opt-2 bytecode cache under the user prefix, so kitty's FIRST
+# post-install launch is already fast instead of paying the compile tax once
+# per module. Purely additive into $HOME/.cache; never needs root (rule 1).
+ensure_kitty_pycache() {
+    if ! [[ -d /usr/lib/kitty/kitty ]]; then
+        return 0   # kitty not installed on this host: nothing to fix
+    fi
+    if ! have python3; then
+        warn "python3 not found; cannot prebuild kitty's bytecode cache"
+        warn "kitty will still be fixed on its first launch via the shim"
+        return 0
+    fi
+
+    # A system-wide cache makes both the shim and this prebuild pointless.
+    if [[ $(find /usr/lib/kitty -name '*.opt-2.pyc' -print -quit 2>/dev/null) ]]; then
+        ok "kitty opt-2 bytecode cache already exists in /usr/lib/kitty"
+        return 0
+    fi
+
+    local prefix="${MAGIKOS_KITTY_PYCACHE:-$HOME/.cache/magikos/kitty-pyc2}"
+    if ((DRY_RUN)); then
+        printf '  \033[2mplan\033[0m  would prebuild kitty opt-2 bytecode cache in %s\n' "$prefix"
+        return 0
+    fi
+
+    mkdir -p "$prefix" || { warn "cannot create $prefix"; return 1; }
+    log "Prebuilding kitty bytecode cache (opt-2) into $prefix"
+    if ( PYTHONPYCACHEPREFIX="$prefix"
+         python3 -OO -m compileall -q /usr/lib/kitty ) >/dev/null 2>&1; then
+        local n
+        n="$(find "$prefix" -name '*.opt-2.pyc' 2>/dev/null | wc -l)" || n=0
+        if ((n > 0)); then
+            ok "kitty bytecode cache ready ($n module(s))"
+        else
+            warn "compileall wrote no cache files; kitty's first launch will be slow"
+            warn "fix with: PYTHONPYCACHEPREFIX=$prefix python3 -OO -m compileall /usr/lib/kitty"
+            return 1
+        fi
+    else
+        warn "python3 -OO -m compileall /usr/lib/kitty failed; kitty's first launch will be slow"
+        warn "re-run manually: PYTHONPYCACHEPREFIX=$prefix python3 -OO -m compileall /usr/lib/kitty"
+        return 1
+    fi
+}
+
 install_launch_shims() {
     have setsid || { err "setsid not found (util-linux); shims need it"; return 1; }
 
     if ((DRY_RUN)); then
         _c mkdir -p "$SHIMS_DIR"
-        log "would install launch shims: uwsm-app, systemd-run, systemctl -> $SHIMS_DIR"
+        if have kitty || [[ -d /usr/lib/kitty/kitty ]]; then
+            log "would install launch shims: uwsm-app, systemd-run, systemctl, kitty -> $SHIMS_DIR"
+        else
+            log "would install launch shims: uwsm-app, systemd-run, systemctl -> $SHIMS_DIR"
+        fi
         return 0
     fi
 
     mkdir -p "$SHIMS_DIR" || { err "cannot create $SHIMS_DIR"; return 1; }
 
     local n=0 f
-    for f in uwsm-app systemd-run systemctl; do
+    # kitty is conditionally shimmed: the port's terminal is foot, but MagikOS
+    # keybinds, the menu and hosts that install kitty all resolve `kitty`, and
+    # only kitty has the recompile-on-launch bug. A shim that shadowed a
+    # nonexistent binary would be pointless bus noise, so install it only when
+    # the host actually has kitty.
+    local -a shims=(uwsm-app systemd-run systemctl)
+    have kitty && shims+=(kitty)
+    for f in "${shims[@]}"; do
         case "$f" in
             uwsm-app)   write_uwsm_app_shim   > "$SHIMS_DIR/$f" ;;
             systemd-run) write_systemd_run_shim > "$SHIMS_DIR/$f" ;;
             systemctl)  write_systemctl_shim  > "$SHIMS_DIR/$f" ;;
+            kitty)      write_kitty_shim     > "$SHIMS_DIR/$f" ;;
         esac
         chmod 0755 "$SHIMS_DIR/$f" || { err "cannot chmod $SHIMS_DIR/$f"; return 1; }
         n=$((n + 1))
     done
     ok "installed $n launch shim(s) in $SHIMS_DIR"
-    printf '        %s\n' "$SHIMS_DIR/uwsm-app" "$SHIMS_DIR/systemd-run" "$SHIMS_DIR/systemctl"
+    printf '        %s\n' ${shims[*]/#/"$SHIMS_DIR/"}
+    ensure_kitty_pycache
 }
 
 # Are the shims present AND first on PATH? A shim that exists but is shadowed

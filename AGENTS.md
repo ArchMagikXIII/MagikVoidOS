@@ -581,9 +581,11 @@ git -C ~/magikos-void rebase --root --exec \
       the only `font.family` literal in the whole tree is `Liberation Sans`.
       Nothing nerd/icon font is installed yet, so ~24 `iconFont` sites and the
       Nerd Font codepoints in `magikos-menu.jsonc` will fall back to boxes.
-      Needs: a Nerd Font (JetBrainsMono Nerd Font / Iosevka Nerd Font) plus
-      `xdg-terminal-exec`, which `magikos-default-terminal` shells out to.
-      `foot` itself is already installed at `/usr/bin/foot`.
+      Needs: a Nerd Font (JetBrainsMono Nerd Font / Iosevka Nerd Font).
+      `foot` itself is already installed at `/usr/bin/foot`, and
+      `xdg-terminal-exec` turns out to be shipped by upstream
+      (`$MAGIKOS_HOME/bin`, tracked in the runtime clone), so nothing extra is
+      needed for it -- the "Next" bullet listing it predates the staged clone.
 - [ ] Install the Void base package set (needs sudo; index sync first)
 - [ ] Log into Sway on real hardware and confirm the bar renders (only
       headless/software rendering has been exercised so far)
@@ -662,6 +664,29 @@ git -C ~/magikos-void rebase --root --exec \
   cmdline that contains the pattern itself.
 
 ## Session log
+
+- kitty launch latency, 2026-10-20: the "apps take 1-3 s to open" report was
+  one fixed bug plus normal app cost. Full diagnosis in
+  `docs/PORTING-NOTES.md`; short version: kitty launches Python at
+  optimization level 2, Void ships no `*.opt-2.pyc`, `/usr/lib/kitty` is not
+  user-writable, so every launch recompiled ~180 modules (~0.8 s CPU before
+  the first frame). Instrument note for the next person: with no `gdb`/`strace`
+  on the host and yama=1, an unprivileged ptrace sampler (fork +
+  `PTRACE_ATTACH` + `PTRACE_GETREGS` only when `/proc/<pid>/stat` state is R)
+  resolves spinning RIPs, and `PYTHONPROFILEIMPORTTIME=1` also applies to
+  kitty's embedded interpreter. Fixes shipped: a `kitty` shim in
+  `$MAGIKOS_HOME/bin` plus `ensure_kitty_pycache` in `lib/shims.sh`
+  (PYTHONPYCACHEPREFIX user cache, self-healing after kitty updates), and
+  `chk_kitty_launch_cache` in `lib/status.sh`. Measured 0.92 s -> 0.14 s.
+
+- prime-run, 2026-10-20: the hand-written `prime-run` wrapper from the gaming
+  session was a repo gap -- `share/void-port.patch`'s own environment.conf
+  comment advertises `prime-run` as the offload wrapper but nothing installed
+  it. `lib/gaming.sh` now stages it (same `_prime_run` payload as
+  `magikos-prime-run`, which is stricter: `__NV_PRIME_RENDER_OFFLOAD` +
+  `__VK_LAYER_NV_optimus`, not just `DRI_PRIME=1` -- the old hand wrapper
+  never touched the Vulkan side). Overwriting the hand file with the repo
+  content is a strict upgrade; `magikos-prime-run` remains the long-form name.
 
 - Audio outage, day 2: after the reboot, sound died again while `wpctl` *hung*.
   Two user-owned wireplumbers were alive since boot, one orphaned at PPID 1

@@ -436,6 +436,44 @@ chk_launch_shims() {
     return 0
 }
 
+# kitty launches its Python at optimization level 2 and Void's package ships
+# no *.opt-2.pyc while /usr/lib/kitty is root-owned. Without a fix, every
+# kitty launch recompiles ~180 modules (~0.8 s CPU) before the first frame:
+# measured exec->window-visible 0.92 s here vs 0.14 s with a working cache.
+# Pass either when the system cache exists, or when the shim is first on PATH
+# and the user cache has content.
+chk_kitty_launch_cache() {
+    have kitty || pkg_installed kitty || return 0   # kitty absent: not this host's problem
+
+    # Preferred system-level fix: bytecode compiled into /usr/lib/kitty.
+    if [[ -n $(find /usr/lib/kitty -name '*.opt-2.pyc' -print -quit 2>/dev/null) ]]; then
+        return 0
+    fi
+
+    local shim="$MAGIKOS_HOME/bin/kitty"
+    if [[ ! -x $shim ]]; then
+        CHECK_HINT="kitty recompiles ~180 Python modules on every launch (~0.8 s pressed-to-window)"$'\n'"Void ships no *.opt-2.pyc and the root-owned __pycache__ is not user-writable"$'\n'"fix with: ./install.sh --no-packages   # installs $shim + prebuilds the user cache"$'\n'"or system-wide: sudo python3 -OO -m compileall /usr/lib/kitty"
+        return 1
+    fi
+    # The shim must WIN on PATH (same rule as chk_launch_shims: verify the
+    # invariant the session PATH guarantees, not the installer shell's).
+    if ! grep -Eq '^[[:space:]]*set \$PATH (\$MAGIKOS_PATH|\$HOME/\.local/share/magikos)/bin:' "$MAGIKOS_USER_SWAY/environment.conf" 2>/dev/null; then
+        CHECK_HINT="environment.conf no longer puts the MagikOS bin dir first on PATH"$'\n'"the kitty shim exists but the session would not resolve to it"$'\n'"fix with: ./install.sh --no-packages   # re-applies the sway overrides"
+        return 1
+    fi
+    local got
+    got="$(PATH="$MAGIKOS_HOME/bin:$PATH" command -v kitty 2>/dev/null)"
+    if [[ $got != "$shim" ]]; then
+        CHECK_HINT="kitty shim shadowed on PATH: resolves to ${got:-<nothing>}"$'\n'"the shim never runs, so kitty stays slow"$'\n'"fix with: ./install.sh --no-packages"
+        return 1
+    fi
+    if [[ -z $(find "$HOME/.cache/magikos/kitty-pyc2" -name '*.opt-2.pyc' -print -quit 2>/dev/null) ]]; then
+        CHECK_HINT="kitty shim installed but its cache is empty; the first launch pays the compile tax"$'\n'"fix with: PYTHONPYCACHEPREFIX=\$HOME/.cache/magikos/kitty-pyc2 python3 -OO -m compileall /usr/lib/kitty"
+        return 1
+    fi
+    return 0
+}
+
 # The wallpaper and theme pickers both read from theme state, so with no theme
 # installed they open with nothing in them and look broken.
 chk_theme() {
@@ -801,6 +839,7 @@ check "runtime is a git clone"    chk_runtime_clone
     check "shell.json staged"            chk_shell_json
     check "shell font (bar glyphs)"      chk_shell_font
 check "launch shims (uwsm/systemd-run/systemctl)" chk_launch_shims
+    check "kitty launch bytecode cache"  chk_kitty_launch_cache
     check "Qt can decode .webp wallpapers" chk_qt_webp
     check "theme set (pickers work)"     chk_theme
     check "image thumbnail backend"      chk_thumbnail_backend

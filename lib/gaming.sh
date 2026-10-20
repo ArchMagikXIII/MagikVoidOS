@@ -300,6 +300,7 @@ install_nvidia_driver() {
     ensure_dir "$MAGIKOS_HOME/bin" "runtime bin dir" || return 1
     if [[ $DRY_RUN -eq 1 ]]; then
         _c bash -c "write $MAGIKOS_HOME/bin/magikos-prime-run (mode 755)"
+        _c bash -c "write $MAGIKOS_HOME/bin/prime-run (mode 755)"
     else
         _prime_run > "$MAGIKOS_HOME/bin/magikos-prime-run.tmp" \
             && mv "$MAGIKOS_HOME/bin/magikos-prime-run.tmp" "$MAGIKOS_HOME/bin/magikos-prime-run" \
@@ -309,10 +310,28 @@ install_nvidia_driver() {
             return 1
         }
         ok "magikos-prime-run staged: run games with 'magikos-prime-run <game>'"
+        stage_prime_run || warn "prime-run not staged; use magikos-prime-run instead"
     fi
 
     log "reboot required to load the NVIDIA module"
     return 0
+}
+
+# `prime-run` is the wrapper NAME the Void port's own sway environment.conf
+# comment advertises (`DRI_PRIME=1 <app>` / `prime-run` / `nvidia-offload`), and
+# upstream Void conventions use that name too. It existed on this host only
+# because it was written by hand during the gaming session -- new installs had
+# the comment promising a tool that was never shipped. magikos-prime-run is the
+# long home (MagikOS naming), prime-run is the advertised alias.
+stage_prime_run() {
+    _prime_run > "$MAGIKOS_HOME/bin/prime-run.tmp" \
+        && mv "$MAGIKOS_HOME/bin/prime-run.tmp" "$MAGIKOS_HOME/bin/prime-run" \
+        && chmod +x "$MAGIKOS_HOME/bin/prime-run" || {
+        err "could not stage prime-run into $MAGIKOS_HOME/bin"
+        err "     fix with: ./install.sh --no-packages"
+        return 1
+    }
+    ok "prime-run staged (alias of magikos-prime-run)"
 }
 
 # --- step 3: Proton-CachyOS ----------------------------------------------------
